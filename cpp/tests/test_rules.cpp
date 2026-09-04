@@ -9,6 +9,7 @@
 #include "harness.hpp"
 
 #include "xau/indicators.hpp"
+#include "xau/registry.hpp"
 #include "xau/rules.hpp"
 #include "xau/session.hpp"
 #include "xau/walk_forward.hpp"
@@ -534,4 +535,68 @@ XAU_TEST(walk_forward_handles_a_degenerate_range) {
                          wf);
     CHECK_EQ(r.folds.size(), std::size_t{0});
     CHECK_EQ(r.pooled.trades, std::size_t{0});
+}
+
+
+// ---------------------------------------------------------------------------
+// registry
+// ---------------------------------------------------------------------------
+
+XAU_TEST(registry_is_well_formed) {
+    const std::span<const BaselineEntry> reg = baseline_registry();
+    CHECK(reg.size() >= 6);
+
+    std::size_t gate_candidates = 0;
+    bool        names_unique = true;
+    bool        all_construct = true;
+    bool        all_described = true;
+
+    for (std::size_t i = 0; i < reg.size(); ++i) {
+        if (reg[i].gate_candidate) ++gate_candidates;
+        if (reg[i].name == nullptr || reg[i].description == nullptr) all_described = false;
+
+        std::unique_ptr<Strategy> s = reg[i].make(0.01);
+        if (!s || s->name() == nullptr) all_construct = false;
+
+        for (std::size_t j = i + 1; j < reg.size(); ++j) {
+            if (std::string(reg[i].name) == std::string(reg[j].name)) names_unique = false;
+        }
+    }
+
+    CHECK(names_unique);
+    CHECK(all_construct);
+    CHECK(all_described);
+    // The four rule baselines from PLAN section 7, and only those. The null
+    // model and buy-and-hold must never be able to satisfy the Phase 3 gate.
+    CHECK_EQ(gate_candidates, std::size_t{4});
+}
+
+XAU_TEST(registry_lookup_and_factories) {
+    CHECK(find_baseline("LondonOpeningRange") != nullptr);
+    CHECK(find_baseline("VolatilityCompression") != nullptr);
+    CHECK(find_baseline("no such strategy") == nullptr);
+    CHECK(find_baseline(nullptr) == nullptr);
+
+    const BaselineEntry* e = find_baseline("AsiaRangeBreakout");
+    REQUIRE(e != nullptr);
+    CHECK(e->gate_candidate);
+
+    // factory_for must hand back a FRESH instance each call: walk-forward
+    // relies on that to keep folds out of sample.
+    const StrategyFactory f = factory_for(*e, 0.05);
+    std::unique_ptr<Strategy> a = f();
+    std::unique_ptr<Strategy> b = f();
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    CHECK(a.get() != b.get());
+    CHECK_EQ(std::string(a->name()), std::string("AsiaRangeBreakout"));
+
+    // It must also outlive the entry reference it was built from, which is why
+    // it copies the maker rather than capturing by reference.
+    StrategyFactory detached;
+    {
+        const BaselineEntry* tmp = find_baseline("TrendPullback");
+        detached = factory_for(*tmp, 0.02);
+    }
+    CHECK(detached() != nullptr);
 }

@@ -11,9 +11,18 @@
 #include "xau/order.hpp"
 #include "xau/symbol_spec.hpp"
 
+#include <functional>
+#include <memory>
 #include <span>
 
 namespace xau {
+
+class Strategy;
+
+// Builds a fresh strategy. Used wherever one must not be shared across runs -
+// walk-forward folds, repeated backtests from the terminal - because a reused
+// instance carries armed setups and indicator state forward.
+using StrategyFactory = std::function<std::unique_ptr<Strategy>()>;
 
 // Everything a strategy is allowed to see at a decision point.
 //

@@ -1,5 +1,7 @@
 #include "app.hpp"
 
+#include "xau/session.hpp"
+
 #include "imgui.h"
 #include "implot.h"
 
@@ -54,23 +56,18 @@ void stat(const char* label, const char* value, const ImVec4* value_col = nullpt
     ImGui::EndGroup();
 }
 
-int utc_hour(TimeUs us) {
-    const std::time_t t = static_cast<std::time_t>(us / 1'000'000);
-    std::tm tm{};
-#ifdef _WIN32
-    gmtime_s(&tm, &t);
-#else
-    gmtime_r(&t, &tm);
-#endif
-    return tm.tm_hour;
-}
-
-const char* session_name(int hour_utc) {
-    if (hour_utc >= 7 && hour_utc < 12) return "London";
-    if (hour_utc >= 12 && hour_utc < 17) return "London/NY overlap";
-    if (hour_utc >= 17 && hour_utc < 21) return "New York";
-    if (hour_utc >= 21 && hour_utc < 23) return "Rollover";
-    return "Asia";
+// Session classification comes from the core (session.hpp) so the chart and the
+// strategies can never disagree about which session a bar is in. Only the
+// display names live here.
+const char* session_label(TimeUs us) {
+    switch (session_at(us)) {
+        case Session::London:   return "London";
+        case Session::Overlap:  return "London/NY overlap";
+        case Session::NewYork:  return "New York";
+        case Session::Rollover: return "Rollover";
+        case Session::Asia:     return "Asia";
+    }
+    return "?";
 }
 
 }  // namespace
@@ -283,8 +280,67 @@ void draw_hover_readout(const AppState& app, std::span<const Bar> bars, const Vi
     text_muted("ticks   %u", b.ticks);
     text_muted("spread  %.3f avg / %.3f max", app.to_usd(static_cast<Points>(b.spread_mean_pts)),
                app.to_usd(static_cast<Points>(b.spread_max_pts)));
-    text_muted("session %s", session_name(utc_hour(b.open_time_us)));
+    text_muted("session %s", session_label(b.open_time_us));
     ImGui::EndTooltip();
+}
+
+// Trades drawn onto the price chart. This is the Phase 2 gate: being able to
+// look at an individual trade in context is what catches the bugs no summary
+// statistic reveals.
+//
+// Culled to the visible window. A decade of a daily strategy is a few thousand
+// trades, and drawing them all every frame would cost more than the candles.
+void draw_trade_markers(const AppState& app) {
+    if (!app.show_trades || !app.bt || app.bt->trades.empty()) return;
+
+    ImDrawList*      dl = ImPlot::GetPlotDrawList();
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    ImPlot::PushPlotClipRect();
+
+    const std::vector<Trade>& trades = app.bt->trades;
+    for (std::size_t i = 0; i < trades.size(); ++i) {
+        const Trade& t = trades[i];
+        const double te = to_sec(t.entry_ts);
+        const double tx = to_sec(t.exit_ts);
+        if (tx < lim.X.Min || te > lim.X.Max) continue;
+
+        const bool  sel = (static_cast<int>(i) == app.selected_trade);
+        const ImU32 c = col32(t.net_usd > 0.0 ? kBull : kBear, sel ? 1.0f : 0.8f);
+
+        const ImVec2 pe = ImPlot::PlotToPixels(te, app.to_usd(t.entry_pts));
+        const ImVec2 px = ImPlot::PlotToPixels(tx, app.to_usd(t.exit_pts));
+
+        dl->AddLine(pe, px, c, sel ? 2.5f : 1.3f);
+
+        // The entry marker points the way the trade was taken.
+        const float s = sel ? 7.0f : 5.0f;
+        if (t.side == Side::Long) {
+            dl->AddTriangleFilled(ImVec2(pe.x, pe.y - s), ImVec2(pe.x - s, pe.y + s),
+                                  ImVec2(pe.x + s, pe.y + s), c);
+        } else {
+            dl->AddTriangleFilled(ImVec2(pe.x, pe.y + s), ImVec2(pe.x - s, pe.y - s),
+                                  ImVec2(pe.x + s, pe.y - s), c);
+        }
+        dl->AddRectFilled(ImVec2(px.x - 3.0f, px.y - 3.0f), ImVec2(px.x + 3.0f, px.y + 3.0f), c);
+
+        // Stop and target for the selected trade only, drawn across that
+        // trade's own duration rather than the whole chart, because that is
+        // when they were actually live.
+        if (sel && app.show_sl_tp) {
+            if (t.sl_pts != 0) {
+                dl->AddLine(ImPlot::PlotToPixels(te, app.to_usd(t.sl_pts)),
+                            ImPlot::PlotToPixels(tx, app.to_usd(t.sl_pts)),
+                            col32(kBear, 0.7f), 1.2f);
+            }
+            if (t.tp_pts != 0) {
+                dl->AddLine(ImPlot::PlotToPixels(te, app.to_usd(t.tp_pts)),
+                            ImPlot::PlotToPixels(tx, app.to_usd(t.tp_pts)),
+                            col32(kBull, 0.7f), 1.2f);
+            }
+            dl->AddCircle(pe, s + 4.0f, col32(kAccent), 0, 2.0f);
+        }
+    }
+    ImPlot::PopPlotClipRect();
 }
 
 }  // namespace
@@ -336,6 +392,10 @@ void panel_chart(AppState& app) {
     ImGui::Checkbox("Volume", &app.show_volume);
     ImGui::SameLine();
     ImGui::Checkbox("Spread", &app.show_spread);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!app.bt.has_value());
+    ImGui::Checkbox("Trades", &app.show_trades);
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Fit all") && !app.bars.empty()) {
         const auto all = app.bars.all_for_display();
@@ -390,6 +450,7 @@ void panel_chart(AppState& app) {
 
         if (app.show_sessions) draw_session_bands(app.x_min, app.x_max);
         draw_candles(app, bars, vis);
+        draw_trade_markers(app);
         draw_hover_readout(app, bars, vis);
 
         ImPlot::EndPlot();
@@ -511,11 +572,10 @@ void panel_market(AppState& app) {
     }
 
     ImGui::SameLine(0, 28);
-    const int h = utc_hour(last.open_time_us);
-    stat("SESSION", session_name(h));
+    stat("SESSION", session_label(last.open_time_us));
 
     ImGui::SameLine(0, 28);
-    std::snprintf(buf, sizeof(buf), "%02d:00 UTC", h);
+    std::snprintf(buf, sizeof(buf), "%02d:00 UTC", utc_hour(last.open_time_us));
     stat("BAR TIME", buf);
 
     ImGui::Spacing();
@@ -552,7 +612,11 @@ void panel_store(AppState& app) {
     std::snprintf(dir, sizeof(dir), "%s", app.store_dir.c_str());
     if (ImGui::InputText("directory", dir, sizeof(dir))) app.store_dir = dir;
     ImGui::SameLine();
+    // A running backtest holds a pointer into this store; swapping it out from
+    // under that thread would be a use-after-free.
+    ImGui::BeginDisabled(app.bt_running);
     if (ImGui::Button("Open")) open_store(app);
+    ImGui::EndDisabled();
 
     if (!app.store) {
         ImGui::Spacing();
@@ -635,6 +699,432 @@ void panel_log(AppState& app) {
 }
 
 // ---------------------------------------------------------------------------
+// backtest, driven off the render thread
+// ---------------------------------------------------------------------------
+
+void start_backtest(AppState& app) {
+    if (!app.store || app.bt_running) return;
+
+    const std::span<const BaselineEntry> reg = baseline_registry();
+    if (app.strategy_index < 0 || app.strategy_index >= static_cast<int>(reg.size())) return;
+    const BaselineEntry& entry = reg[static_cast<std::size_t>(app.strategy_index)];
+
+    BacktestConfig cfg;
+    cfg.spec = SymbolSpec::xauusd_default();
+    cfg.tf = app.tf;
+    cfg.initial_balance = app.initial_balance;
+    cfg.apply_swap = app.apply_swap;
+    cfg.costs.slip_base_pts = 15.0;
+    cfg.costs.slip_vol_coef = 0.05;
+    cfg.costs.latency_us = 150'000;
+    cfg.costs.commission_per_lot_round_usd = app.commission;
+    cfg.costs.spread_mult = app.spread_mult;
+    cfg.costs.slippage_mult = app.slippage_mult;
+
+    // The worker holds a bare pointer to the store, so reopening it mid-run
+    // would leave that thread reading freed memory. Both the File menu and the
+    // Store panel disable reopening while bt_running.
+    const TickStore* store = &*app.store;
+    StrategyFactory  make = factory_for(entry, app.lots);
+
+    app.bt_error.clear();
+    app.selected_trade = -1;
+    app.bt_running = true;
+    app.log.info(std::string("backtest: ") + entry.name + " started");
+
+    // A decade is a few seconds of work. Doing it inline would freeze the
+    // window, and an unresponsive terminal is the kind of thing you forgive
+    // exactly once.
+    app.bt_future = std::async(std::launch::async, [store, cfg, make]() -> BacktestOutcome {
+        BacktestOutcome out;
+        try {
+            std::unique_ptr<Strategy> s = make();
+            out.result = BacktestEngine(*store, cfg).run(*s);
+            out.ok = true;
+        } catch (const std::exception& e) {
+            out.error = e.what();
+        } catch (...) {
+            out.error = "unknown error";
+        }
+        return out;
+    });
+}
+
+void poll_backtest(AppState& app) {
+    if (!app.bt_running || !app.bt_future.valid()) return;
+    if (app.bt_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+
+    BacktestOutcome out = app.bt_future.get();
+    app.bt_running = false;
+
+    if (!out.ok) {
+        app.bt.reset();
+        app.eq_x.clear();
+        app.eq_y.clear();
+        app.dd_y.clear();
+        app.bt_error = out.error;
+        app.log.error("backtest failed: " + out.error);
+        return;
+    }
+
+    app.bt = std::move(out.result);
+
+    // Flatten the equity series once, here. A decade of M15 is ~350k points,
+    // and rebuilding that inside the panel would redo it sixty times a second
+    // for a curve that has not changed.
+    app.eq_x.clear();
+    app.eq_y.clear();
+    app.dd_y.clear();
+    const std::vector<EquityPoint>& eq = app.bt->equity;
+    app.eq_x.reserve(eq.size());
+    app.eq_y.reserve(eq.size());
+    app.dd_y.reserve(eq.size());
+    double peak = app.bt->initial_balance;
+    for (const EquityPoint& p : eq) {
+        peak = std::max(peak, p.equity);
+        app.eq_x.push_back(to_sec(p.ts_us));
+        app.eq_y.push_back(p.equity);
+        app.dd_y.push_back(peak > 0.0 ? -100.0 * (peak - p.equity) / peak : 0.0);
+    }
+    app.eqx_min = app.eq_x.empty() ? 0.0 : app.eq_x.front();
+    app.eqx_max = app.eq_x.empty() ? 1.0 : app.eq_x.back();
+
+    char buf[224];
+    std::snprintf(buf, sizeof(buf),
+                  "backtest: %zu trades, net %.2f USD, PF %.3f, maxDD %.2f%% in %.2f s",
+                  app.bt->metrics.trades, app.bt->metrics.net_profit,
+                  app.bt->metrics.profit_factor, app.bt->metrics.max_drawdown_pct,
+                  app.bt->stats.wall_seconds);
+    app.log.info(buf);
+    if (app.bt->stats.rejected_total() > 0) {
+        std::snprintf(buf, sizeof(buf),
+                      "  %llu orders rejected (stop too close %llu, inside spread %llu, "
+                      "volume %llu, already in position %llu)",
+                      static_cast<unsigned long long>(app.bt->stats.rejected_total()),
+                      static_cast<unsigned long long>(app.bt->stats.rejected_stop_too_close),
+                      static_cast<unsigned long long>(app.bt->stats.rejected_stop_inside_spread),
+                      static_cast<unsigned long long>(app.bt->stats.rejected_volume),
+                      static_cast<unsigned long long>(app.bt->stats.rejected_in_position));
+        app.log.warn(buf);
+    }
+}
+
+void select_trade(AppState& app, int index, bool jump_chart) {
+    if (!app.bt || app.bt->trades.empty()) {
+        app.selected_trade = -1;
+        return;
+    }
+    const int n = static_cast<int>(app.bt->trades.size());
+    app.selected_trade = std::clamp(index, 0, n - 1);
+    if (!jump_chart) return;
+
+    // Frame the trade with context either side rather than filling the view
+    // with it. What led into a trade is most of why you are looking at it.
+    const Trade& t = app.bt->trades[static_cast<std::size_t>(app.selected_trade)];
+    const double a = to_sec(t.entry_ts);
+    const double b = to_sec(t.exit_ts);
+    const double bar_seconds = static_cast<double>(timeframe_us(app.tf)) / kUsPerSec;
+    const double pad = std::max((b - a) * 1.5, bar_seconds * 20.0);
+    app.x_min = a - pad;
+    app.x_max = b + pad;
+}
+
+// ---------------------------------------------------------------------------
+// backtest runner
+// ---------------------------------------------------------------------------
+
+void panel_runner(AppState& app) {
+    if (!ImGui::Begin("Backtest", &app.p_runner)) {
+        ImGui::End();
+        return;
+    }
+
+    const std::span<const BaselineEntry> reg = baseline_registry();
+    if (app.strategy_index >= static_cast<int>(reg.size())) app.strategy_index = 0;
+    const BaselineEntry& cur = reg[static_cast<std::size_t>(app.strategy_index)];
+
+    ImGui::SetNextItemWidth(240);
+    if (ImGui::BeginCombo("strategy", cur.name)) {
+        for (int i = 0; i < static_cast<int>(reg.size()); ++i) {
+            const BaselineEntry& e = reg[static_cast<std::size_t>(i)];
+            const bool           chosen = (i == app.strategy_index);
+            if (ImGui::Selectable(e.name, chosen)) app.strategy_index = i;
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(380.0f);
+                ImGui::TextUnformatted(e.description);
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+            if (chosen) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(cur.description);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(110);
+    ImGui::InputDouble("lots", &app.lots, 0.01, 0.10, "%.2f");
+    ImGui::SameLine(0, 18);
+    ImGui::SetNextItemWidth(110);
+    ImGui::InputDouble("balance", &app.initial_balance, 1000.0, 5000.0, "%.0f");
+    ImGui::SetNextItemWidth(110);
+    ImGui::InputDouble("commission/lot", &app.commission, 1.0, 5.0, "%.2f");
+    ImGui::SameLine(0, 18);
+    ImGui::Checkbox("swap", &app.apply_swap);
+
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
+    ImGui::TextUnformatted("cost stress - a strategy has to survive 2x (PLAN section 8)");
+    ImGui::PopStyleColor();
+    ImGui::SetNextItemWidth(90);
+    ImGui::InputDouble("spread x", &app.spread_mult, 0.25, 1.0, "%.2f");
+    ImGui::SameLine(0, 14);
+    ImGui::SetNextItemWidth(90);
+    ImGui::InputDouble("slip x", &app.slippage_mult, 0.25, 1.0, "%.2f");
+    ImGui::SameLine(0, 14);
+    if (ImGui::Button("1x")) {
+        app.spread_mult = 1.0;
+        app.slippage_mult = 1.0;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("2x")) {
+        app.spread_mult = 2.0;
+        app.slippage_mult = 2.0;
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(app.bt_running || !app.store);
+    if (ImGui::Button("Run backtest", ImVec2(150, 28))) start_backtest(app);
+    ImGui::EndDisabled();
+    if (app.bt_running) {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+        ImGui::TextUnformatted("running...");
+        ImGui::PopStyleColor();
+    } else if (!app.store) {
+        ImGui::SameLine();
+        text_muted("no store loaded");
+    }
+
+    if (!app.bt_error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kBear);
+        ImGui::TextWrapped("%s", app.bt_error.c_str());
+        ImGui::PopStyleColor();
+    }
+
+    if (app.bt) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextUnformatted(app.bt->summary().c_str());
+    }
+
+    ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// equity and drawdown
+// ---------------------------------------------------------------------------
+
+void panel_equity(AppState& app) {
+    if (!ImGui::Begin("Equity", &app.p_equity)) {
+        ImGui::End();
+        return;
+    }
+    if (!app.bt || app.eq_x.empty()) {
+        text_muted("run a backtest to see the equity curve");
+        ImGui::End();
+        return;
+    }
+
+    const Metrics& m = app.bt->metrics;
+    char           buf[64];
+
+    std::snprintf(buf, sizeof(buf), "%.2f", m.net_profit);
+    stat("NET USD", buf, m.net_profit >= 0.0 ? &kBull : &kBear);
+    ImGui::SameLine(0, 24);
+    std::snprintf(buf, sizeof(buf), "%.3f", m.profit_factor);
+    stat("PROFIT FACTOR", buf);
+    ImGui::SameLine(0, 24);
+    std::snprintf(buf, sizeof(buf), "-%.2f%%", m.max_drawdown_pct);
+    stat("MAX DD", buf, &kBear);
+    ImGui::SameLine(0, 24);
+    std::snprintf(buf, sizeof(buf), "%.1f%%", m.win_rate * 100.0);
+    stat("WIN RATE", buf);
+    ImGui::SameLine(0, 24);
+    std::snprintf(buf, sizeof(buf), "%.4f", m.expectancy_usd);
+    stat("EXPECTANCY", buf, m.expectancy_usd >= 0.0 ? &kBull : &kBear);
+
+    ImGui::Spacing();
+
+    const int   n = static_cast<int>(app.eq_x.size());
+    const float avail = ImGui::GetContentRegionAvail().y;
+    const float dd_h = std::max(60.0f, avail * 0.30f);
+    const float eq_h = std::max(80.0f, avail - dd_h - 6.0f);
+
+    if (ImPlot::BeginPlot("##equity", ImVec2(-1, eq_h),
+                          ImPlotFlags_NoTitle | ImPlotFlags_NoLegend)) {
+        ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel,
+                          ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_Opposite);
+        ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
+        ImPlot::SetupAxisLinks(ImAxis_X1, &app.eqx_min, &app.eqx_max);
+        ImPlot::SetupAxisFormat(ImAxis_Y1, "$%.0f");
+        ImPlot::SetupFinish();
+
+        // The starting balance, so profit and loss are separated by eye rather
+        // than by reading the axis.
+        const double bx[2] = {app.eq_x.front(), app.eq_x.back()};
+        const double by[2] = {app.bt->initial_balance, app.bt->initial_balance};
+        ImPlot::SetNextLineStyle(ImVec4(kMuted.x, kMuted.y, kMuted.z, 0.55f), 1.0f);
+        ImPlot::PlotLine("start", bx, by, 2);
+
+        ImPlot::SetNextLineStyle(kAccent, 1.6f);
+        ImPlot::PlotLine("equity", app.eq_x.data(), app.eq_y.data(), n);
+
+        // The selected trade, so blotter, chart and curve all agree about which
+        // one you are looking at.
+        if (app.selected_trade >= 0) {
+            const Trade& t = app.bt->trades[static_cast<std::size_t>(app.selected_trade)];
+            const double mx[1] = {to_sec(t.exit_ts)};
+            const double my[1] = {t.balance_after};
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 5.0f, kAccent, 2.0f, kAccent);
+            ImPlot::PlotScatter("##sel", mx, my, 1);
+        }
+        ImPlot::EndPlot();
+    }
+
+    if (ImPlot::BeginPlot("##underwater", ImVec2(-1, dd_h),
+                          ImPlotFlags_NoTitle | ImPlotFlags_NoLegend)) {
+        ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoLabel,
+                          ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_Opposite);
+        ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
+        ImPlot::SetupAxisLinks(ImAxis_X1, &app.eqx_min, &app.eqx_max);
+        ImPlot::SetupAxisFormat(ImAxis_Y1, "%.1f%%");
+        ImPlot::SetupFinish();
+        ImPlot::SetNextFillStyle(kBear, 0.35f);
+        ImPlot::PlotShaded("underwater", app.eq_x.data(), app.dd_y.data(), n, 0.0);
+        ImPlot::SetNextLineStyle(kBear, 1.1f);
+        ImPlot::PlotLine("underwater", app.eq_x.data(), app.dd_y.data(), n);
+        ImPlot::EndPlot();
+    }
+
+    ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// blotter
+// ---------------------------------------------------------------------------
+
+void panel_blotter(AppState& app) {
+    if (!ImGui::Begin("Trades", &app.p_blotter)) {
+        ImGui::End();
+        return;
+    }
+    if (!app.bt) {
+        text_muted("run a backtest to populate the blotter");
+        ImGui::End();
+        return;
+    }
+
+    const std::vector<Trade>& tr = app.bt->trades;
+    const SymbolSpec          spec = SymbolSpec::xauusd_default();
+
+    // Rejections are shown next to the trade count, never hidden: a strategy
+    // that is mostly rejected looks profitable on the trades that survived.
+    text_muted("%zu trades from %llu signals, %llu rejected", tr.size(),
+               static_cast<unsigned long long>(app.bt->stats.signals),
+               static_cast<unsigned long long>(app.bt->stats.rejected_total()));
+    ImGui::SameLine();
+    text_muted("   [ and ] step through");
+
+    ImGui::Spacing();
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_ScrollY |
+                                      ImGuiTableFlags_SizingStretchProp |
+                                      ImGuiTableFlags_Resizable;
+    if (ImGui::BeginTable("blotter", 9, flags)) {
+        ImGui::TableSetupColumn("#");
+        ImGui::TableSetupColumn("side");
+        ImGui::TableSetupColumn("entry time");
+        ImGui::TableSetupColumn("in");
+        ImGui::TableSetupColumn("out");
+        ImGui::TableSetupColumn("net USD");
+        ImGui::TableSetupColumn("R");
+        ImGui::TableSetupColumn("MAE / MFE");
+        ImGui::TableSetupColumn("exit");
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+
+        // Clipped: a decade of a daily strategy is thousands of rows and only
+        // a screenful is ever visible.
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(tr.size()));
+        while (clipper.Step()) {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                const Trade& t = tr[static_cast<std::size_t>(i)];
+                ImGui::TableNextRow();
+                ImGui::PushID(i);
+
+                ImGui::TableNextColumn();
+                char lbl[16];
+                std::snprintf(lbl, sizeof(lbl), "%d", i + 1);
+                if (ImGui::Selectable(lbl, i == app.selected_trade,
+                                      ImGuiSelectableFlags_SpanAllColumns)) {
+                    select_trade(app, i, true);
+                }
+
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(t.side == Side::Long ? "long" : "short");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(fmt_time(t.entry_ts).c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%.3f", app.to_usd(t.entry_pts));
+                ImGui::TableNextColumn();
+                ImGui::Text("%.3f", app.to_usd(t.exit_pts));
+
+                ImGui::TableNextColumn();
+                ImGui::PushStyleColor(ImGuiCol_Text, t.net_usd > 0.0 ? kBull : kBear);
+                ImGui::Text("%.2f", t.net_usd);
+                ImGui::PopStyleColor();
+
+                // R multiple: profit over what was actually at risk. Undefined
+                // without a stop, and saying so beats printing a number.
+                ImGui::TableNextColumn();
+                if (t.sl_pts != 0) {
+                    const Points risk_pts = t.entry_pts > t.sl_pts ? t.entry_pts - t.sl_pts
+                                                                   : t.sl_pts - t.entry_pts;
+                    const double risk = spec.pnl_usd(risk_pts, t.lots);
+                    if (risk > 0.0) {
+                        ImGui::Text("%.2f", t.net_usd / risk);
+                    } else {
+                        ImGui::TextUnformatted("-");
+                    }
+                } else {
+                    ImGui::TextUnformatted("-");
+                }
+
+                ImGui::TableNextColumn();
+                ImGui::Text("%.2f / %.2f", app.to_usd(t.mae_pts), app.to_usd(t.mfe_pts));
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(exit_reason_name(t.exit_reason));
+
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndTable();
+    }
+    ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
 // shell
 // ---------------------------------------------------------------------------
 
@@ -643,9 +1133,16 @@ void draw_ui(AppState& app) {
     // pinned imgui v1.90.9-docking. Passing 0 lets ImGui derive the id.
     ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
 
+    // Pick up a finished run before anything draws, so every panel in this
+    // frame sees the same result.
+    poll_backtest(app);
+
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
+            // Reopening would free the store a running backtest is reading.
+            ImGui::BeginDisabled(app.bt_running);
             if (ImGui::MenuItem("Reopen store")) open_store(app);
+            ImGui::EndDisabled();
             if (ImGui::MenuItem("Rebuild bars")) app.needs_rebuild = true;
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) app.should_quit = true;
@@ -653,6 +1150,10 @@ void draw_ui(AppState& app) {
         }
         if (ImGui::BeginMenu("View")) {
             ImGui::MenuItem("Chart", nullptr, &app.p_chart);
+            ImGui::MenuItem("Backtest", nullptr, &app.p_runner);
+            ImGui::MenuItem("Equity", nullptr, &app.p_equity);
+            ImGui::MenuItem("Trades", nullptr, &app.p_blotter);
+            ImGui::Separator();
             ImGui::MenuItem("Market", nullptr, &app.p_market);
             ImGui::MenuItem("Store", nullptr, &app.p_store);
             ImGui::MenuItem("Log", nullptr, &app.p_log);
@@ -661,27 +1162,39 @@ void draw_ui(AppState& app) {
             ImGui::EndMenu();
         }
 
-        // Panels that need the Phase 1 engine. Shown greyed rather than hidden,
-        // so the shape of the finished terminal is visible and the gap is
-        // explicit instead of quietly missing.
         if (ImGui::BeginMenu("Trade")) {
+            const bool have = app.bt && !app.bt->trades.empty();
+            ImGui::BeginDisabled(!have);
+            if (ImGui::MenuItem("First")) select_trade(app, 0, true);
+            if (ImGui::MenuItem("Previous", "[")) select_trade(app, app.selected_trade - 1, true);
+            if (ImGui::MenuItem("Next", "]")) select_trade(app, app.selected_trade + 1, true);
+            if (ImGui::MenuItem("Last")) {
+                select_trade(app, have ? static_cast<int>(app.bt->trades.size()) - 1 : 0, true);
+            }
+            ImGui::EndDisabled();
+            ImGui::Separator();
+            ImGui::MenuItem("Show markers", nullptr, &app.show_trades);
+            ImGui::MenuItem("Show stop / target", nullptr, &app.show_sl_tp);
+            ImGui::Separator();
+            // Still greyed, and still labelled, so the remaining gap stays
+            // visible rather than quietly absent.
             ImGui::BeginDisabled();
-            ImGui::MenuItem("Blotter");
-            ImGui::MenuItem("Equity & drawdown");
-            ImGui::MenuItem("Backtest runner");
             ImGui::MenuItem("Optimizer");
             ImGui::MenuItem("Risk gauges");
             ImGui::EndDisabled();
-            ImGui::Separator();
             ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
-            ImGui::TextUnformatted("  requires the Phase 1 engine");
+            ImGui::TextUnformatted("  optimizer needs Phase 6, gauges Phase 7");
             ImGui::PopStyleColor();
             ImGui::EndMenu();
         }
 
-        const std::string right = app.store
-                                      ? app.symbol + "  |  " + timeframe_name(app.tf)
+        std::string right = app.store ? app.symbol + "  |  " + timeframe_name(app.tf)
                                       : std::string("no store");
+        if (app.bt) {
+            char extra[64];
+            std::snprintf(extra, sizeof(extra), "  |  %zu trades", app.bt->metrics.trades);
+            right += extra;
+        }
         const float w = ImGui::CalcTextSize(right.c_str()).x;
         ImGui::SameLine(ImGui::GetWindowWidth() - w - 16);
         ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
@@ -690,9 +1203,24 @@ void draw_ui(AppState& app) {
         ImGui::EndMainMenuBar();
     }
 
+    // Stepping trade by trade with [ and ] is the Phase 2 gate in practice.
+    // Suppressed while a text field has focus, or typing a lot size would
+    // scroll the chart.
+    if (app.bt && !ImGui::GetIO().WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_RightBracket, true)) {
+            select_trade(app, app.selected_trade + 1, true);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket, true)) {
+            select_trade(app, app.selected_trade - 1, true);
+        }
+    }
+
     if (app.needs_rebuild) rebuild_bars(app);
 
     if (app.p_chart) panel_chart(app);
+    if (app.p_runner) panel_runner(app);
+    if (app.p_equity) panel_equity(app);
+    if (app.p_blotter) panel_blotter(app);
     if (app.p_market) panel_market(app);
     if (app.p_store) panel_store(app);
     if (app.p_log) panel_log(app);

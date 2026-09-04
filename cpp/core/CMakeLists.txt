@@ -6,6 +6,7 @@ add_library(xaucore STATIC
     src/baselines.cpp
     src/rules.cpp
     src/walk_forward.cpp
+    src/registry.cpp
 )
 
 add_library(xau::core ALIAS xaucore)

@@ -56,10 +56,6 @@ struct WalkForwardResult {
     [[nodiscard]] std::string summary() const;
 };
 
-// Rebuilt per fold, deliberately: a shared strategy would carry armed setups
-// and indicator state across a boundary and quietly leak information forward.
-using StrategyFactory = std::function<std::unique_ptr<Strategy>()>;
-
 [[nodiscard]] WalkForwardResult run_walk_forward(const TickStore& store,
                                                  const BacktestConfig& cfg,
                                                  const StrategyFactory& make,

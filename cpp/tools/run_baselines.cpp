@@ -13,6 +13,7 @@
 //   run_baselines [dir] [symbol] [--fold-days N] [--lots X] [--require-gate]
 
 #include "xau/engine.hpp"
+#include "xau/registry.hpp"
 #include "xau/rules.hpp"
 #include "xau/session.hpp"
 #include "xau/tick_store.hpp"
@@ -76,40 +77,6 @@ BacktestConfig base_config() {
     c.costs.latency_us = 150'000;
     c.costs.commission_per_lot_round_usd = 7.0;
     return c;
-}
-
-struct Baseline {
-    const char*   name;
-    StrategyFactory make;
-};
-
-std::vector<Baseline> baselines(double lots) {
-    return {
-        {"LondonOpeningRange",
-         [lots] {
-             LondonOpeningRange::Config c;
-             c.lots = lots;
-             return std::make_unique<LondonOpeningRange>(c);
-         }},
-        {"AsiaRangeBreakout",
-         [lots] {
-             AsiaRangeBreakout::Config c;
-             c.lots = lots;
-             return std::make_unique<AsiaRangeBreakout>(c);
-         }},
-        {"TrendPullback",
-         [lots] {
-             TrendPullback::Config c;
-             c.lots = lots;
-             return std::make_unique<TrendPullback>(c);
-         }},
-        {"VolatilityCompression",
-         [lots] {
-             VolatilityCompression::Config c;
-             c.lots = lots;
-             return std::make_unique<VolatilityCompression>(c);
-         }},
-    };
 }
 
 }  // namespace
@@ -180,9 +147,14 @@ int main(int argc, char** argv) {
         bool   gate_pass = false;
         double best_pf_2x = 0.0;
 
-        for (const Baseline& b : baselines(lots)) {
-            const WalkForwardResult r1 = run_walk_forward(store, cfg, b.make, wf);
-            const WalkForwardResult r2 = run_walk_forward(store, cfg2x, b.make, wf);
+        // Only the four rule baselines are gate candidates. The null model and
+        // buy-and-hold are runnable elsewhere but letting either satisfy the
+        // Phase 3 gate would be meaningless.
+        for (const BaselineEntry& b : baseline_registry()) {
+            if (!b.gate_candidate) continue;
+            const StrategyFactory   make = factory_for(b, lots);
+            const WalkForwardResult r1 = run_walk_forward(store, cfg, make, wf);
+            const WalkForwardResult r2 = run_walk_forward(store, cfg2x, make, wf);
 
             std::printf("%-22s %6zu %7zu %11.2f %7.3f %7.3f %6.0f%% | %7.3f %11.2f\n", b.name,
                         r1.folds.size(), r1.pooled.trades, r1.pooled.net_profit,
