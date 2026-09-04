@@ -639,7 +639,9 @@ void panel_log(AppState& app) {
 // ---------------------------------------------------------------------------
 
 void draw_ui(AppState& app) {
-    ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
+    // Signature is (dockspace_id, viewport, flags, window_class) as of the
+    // pinned imgui v1.90.9-docking. Passing 0 lets ImGui derive the id.
+    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
