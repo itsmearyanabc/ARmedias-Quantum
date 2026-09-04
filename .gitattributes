@@ -1,0 +1,19 @@
+# Normalise to LF in the repository; Git checks out native line endings.
+# Keeps diffs clean between Windows development and Linux CI.
+* text=auto
+
+*.cpp   text diff=cpp
+*.hpp   text diff=cpp
+*.py    text diff=python
+*.md    text
+*.json  text
+*.yml   text
+*.txt   text
+*.mq5   text
+
+# Binary — never touch these
+*.bin   binary
+*.bi5   binary
+*.png   binary
+*.ttf   binary
+*.pdf   binary

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "xau-terminal",
+  "version": "0.1.0",
+  "description": "XAUUSD algorithmic trading terminal — C++ core, ImGui front end, MT5 bridge",
+  "builtin-baseline": "",
+  "dependencies": [],
+  "features": {
+    "terminal": {
+      "description": "Phase 2 — the ImGui/ImPlot terminal UI",
+      "dependencies": [ "imgui", "implot" ]
+    },
+    "runtime": {
+      "description": "Phase 1+ — logging, config, journal",
+      "dependencies": [ "spdlog", "nlohmann-json", "sqlitecpp" ]
+    },
+    "model": {
+      "description": "Phase 5 — LightGBM inference in C++",
+      "dependencies": [ "lightgbm" ]
+    },
+    "bindings": {
+      "description": "pybind11 module so Python research calls the same engine",
+      "dependencies": [ "pybind11" ]
+    }
+  }
+}

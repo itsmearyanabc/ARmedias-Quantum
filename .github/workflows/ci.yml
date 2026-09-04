@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  cpp:
+    name: c++ ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            preset: msvc-release
+          - os: ubuntu-latest
+            preset: gcc-release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Unit tests
+        run: ctest --preset ${{ matrix.preset }}
+
+      # The throughput gate needs data. Generate a synthetic store, then hold
+      # the reader to >= 20M ticks/s (docs/PLAN.md section 3). A regression here
+      # fails the build rather than going unnoticed.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate synthetic ticks
+        run: |
+          python -m pip install numpy
+          python -m xau_ingest.synth --months 3 --out ../data/ticks/XAUUSD
+        working-directory: python
+
+      - name: Throughput gate
+        run: ./build/${{ matrix.preset }}/bin/bench_tick_store data/ticks/XAUUSD XAUUSD 20000000
+        shell: bash
+
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: python -m pip install numpy requests pytest
+      - name: Tests
+        run: python -m pytest python/tests -q
+      - name: End-to-end generate and verify
+        run: |
+          cd python
+          python -m xau_ingest.synth --months 2 --out ../data/ticks/XAUUSD
+          python -m xau_ingest.tickfmt ../data/ticks/XAUUSD --symbol XAUUSD

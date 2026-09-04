@@ -1,0 +1,42 @@
+# Build output
+build/
+out/
+*.obj
+*.lib
+*.dll
+*.exe
+*.pdb
+*.ilk
+
+# vcpkg
+vcpkg_installed/
+.vcpkg-root
+
+# Market data — large, regenerable, and not ours to redistribute
+data/ticks/
+data/raw/
+data/models/
+data/*.sqlite
+data/*.sqlite-journal
+*.bin
+*.bi5
+
+# Secrets — MT5 credentials, Telegram token, API keys
+config/.env
+.env
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ipython/
+.ipynb_checkpoints/
+
+# Editors
+.vs/
+.vscode/
+.idea/
+CMakeUserPresets.json

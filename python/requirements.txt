@@ -1,0 +1,12 @@
+# Phase 0 — data ingest and format tooling.
+# Modelling dependencies (lightgbm, optuna, shap, statsmodels) arrive in Phase 5;
+# they are not listed yet so a fresh clone installs in seconds.
+
+numpy>=1.26
+requests>=2.31
+pytest>=8.0
+
+# Windows only, and needs the MT5 terminal installed, running and logged in.
+# Used solely for symbol-spec discovery and one-off history pulls — never on a
+# backtest path.
+MetaTrader5>=5.0.45 ; sys_platform == "win32"
