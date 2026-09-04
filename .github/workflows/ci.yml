@@ -87,7 +87,7 @@ jobs:
           ./build/${{ matrix.preset }}/bin/bench_tick_store data/ticks/XAUUSD XAUUSD 20000000 2>&1 | tee bench.log
           rc=${PIPESTATUS[0]}
           set -e
-          grep -aE "M ticks/s|^gate|^files|^store" bench.log | while IFS= read -r line; do
+          grep -aE "^gate" bench.log | while IFS= read -r line; do
             clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
             echo "::notice::${clean}"
           done
@@ -102,7 +102,7 @@ jobs:
           ./build/${{ matrix.preset }}/bin/bench_backtest data/ticks/XAUUSD XAUUSD 15000000 2>&1 | tee bt.log
           rc=${PIPESTATUS[0]}
           set -e
-          grep -aE "M ticks/s|^gate|^trades|^net profit|^expectancy|WARNING" bt.log | head -12 | while IFS= read -r line; do
+          grep -aE "^gate|^expectancy|WARNING" bt.log | head -3 | while IFS= read -r line; do
             clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
             echo "::notice::${clean}"
           done
@@ -126,14 +126,14 @@ jobs:
           cd python
           python -c "import xaucore; print('xaucore', xaucore.__version__)"
           set -o pipefail
-          if python -m pytest tests/test_bindings.py -q 2>&1 | tee ../bind.log; then
+          if python -m pytest tests/test_bindings.py -q --tb=line 2>&1 | tee ../bind.log; then
             tail -3 ../bind.log | while IFS= read -r line; do
               clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
               echo "::notice::bindings: ${clean}"
             done
             exit 0
           fi
-          grep -aE "assert|Error|FAILED|error" ../bind.log | head -12 | while IFS= read -r line; do
+          grep -aE "^E |Error|assert|\.py:[0-9]+|failed" ../bind.log | head -10 | while IFS= read -r line; do
             clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
             echo "::error::${clean}"
           done

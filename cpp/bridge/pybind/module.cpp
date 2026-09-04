@@ -372,7 +372,10 @@ PYBIND11_MODULE(xaucore, m) {
     py::class_<BuyAndHold, Strategy>(m, "BuyAndHold")
         .def(py::init<double, Side>(), py::arg("lots") = 0.01, py::arg("side") = Side::Long);
 
-    py::class_<RandomEntry> rnd(m, "RandomEntry");
+    // `, Strategy` is load-bearing: without the base registered, pybind11 does
+    // not know a RandomEntry is a Strategy and BacktestEngine.run() rejects it
+    // as an incompatible argument.
+    py::class_<RandomEntry, Strategy> rnd(m, "RandomEntry");
     py::class_<RandomEntry::Config>(rnd, "Config")
         .def(py::init<>())
         .def_readwrite("entry_prob", &RandomEntry::Config::entry_prob)
