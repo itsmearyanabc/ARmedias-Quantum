@@ -11,14 +11,14 @@ optimises for instead.
 
 ---
 
-## Status: Phase 1 complete · Phase 0 gates met but data outstanding · Phase 2 partial
+## Status: Phases 1 and 3 built · everything now waits on real tick data
 
 | Phase | | |
 |---|---|---|
 | 0 | Toolchain and data foundation | gates met — real data + MT5 spec outstanding |
 | 1 | Backtest engine and cost model | **complete** |
 | 2 | Terminal MVP | partial — see below |
-| 3 | Rule baselines | not started |
+| 3 | Rule baselines | built — **gate blocked on real data** |
 | 4 | Feature engine and labels | not started |
 | 5 | Meta-labeling model | not started |
 | 6 | Validation suite | not started |
@@ -106,6 +106,41 @@ cmake --preset msvc-release && cmake --build --preset msvc-release
 ```bash
 ./build/msvc-release/bin/xauterm.exe data/ticks/XAUUSD XAUUSD
 ```
+
+### Phase 3 checklist
+
+The four baselines and the machinery to judge them are built and green. The
+**verdict is not**, and cannot be, until there is real history to run against.
+
+- [x] `session.hpp` — UTC calendar and gold's sessions, floor-divided so
+      pre-epoch timestamps stay aligned. `engine.cpp` now shares it rather than
+      keeping a second weekday implementation.
+- [x] `indicators.hpp` — incremental Wilder ATR and seeded EMA, O(1) per bar
+- [x] **LondonOpeningRange** — range over the London open hour, trade the break,
+      ATR band cutting both tails
+- [x] **AsiaRangeBreakout** — the thin Asia range resolving into London; the
+      window wraps midnight, which is what `session_day()` handles
+- [x] **TrendPullback** — with the slow trend, entered on the resumption rather
+      than the pullback
+- [x] **VolatilityCompression** — NR7 compression, traded on the expansion,
+      setups aged out
+- [x] Walk-forward over consecutive out-of-sample folds, strategy rebuilt each
+      fold so armed setups and indicator state cannot leak forward
+- [x] `run_baselines` reports the gate at 1× and 2× costs
+- [ ] **Gate: PF > 1.05 after 2× costs** — needs Dukascopy history
+
+On synthetic data all four lose money (best PF 0.689 at 2× costs), which is the
+correct and only meaningful result: the generator is a driftless random walk
+built as the Phase 4 null. A strategy showing an edge there would mean the
+harness was manufacturing one.
+
+```bash
+./build/msvc-release/bin/run_baselines data/ticks/XAUUSD XAUUSD --fold-days 90
+```
+
+The tool prints a loud banner and refuses to render a verdict when it detects
+synthetic ticks. Add `--require-gate` to make the exit code follow the gate once
+real data is in place.
 
 ---
 

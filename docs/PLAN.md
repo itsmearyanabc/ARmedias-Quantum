@@ -622,6 +622,13 @@ Built early on purpose: this panel is a debugging instrument, and it will catch 
 
 ### Phase 3 — Rule baselines (7 days)
 - The four session/structure strategies from §7, walk-forward tested
+
+> **Built (Phase 3).** All four baselines, the session/indicator primitives and
+> the walk-forward runner are implemented and green on both compilers. The gate
+> itself is **not evaluated**: the only data on hand is the synthetic driftless
+> random walk built as the §8 null, where all four correctly lose money (best PF
+> 0.689 at 2× costs). Running the gate needs real Dukascopy history — until then
+> `run_baselines` prints a banner and declines to give a verdict.
 - **Gate:** at least one shows PF > 1.05 after **2× costs**. **If none do, stop.** The problem is the cost/timeframe combination, not the model — revisit the horizon before investing weeks in ML. This gate has saved more projects than any other.
 
 ### Phase 4 — Feature engine and labels (7–10 days)
