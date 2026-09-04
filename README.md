@@ -11,11 +11,11 @@ optimises for instead.
 
 ---
 
-## Status: Phases 0 and 1 complete, Phase 2 partial
+## Status: Phase 1 complete · Phase 0 gates met but data outstanding · Phase 2 partial
 
 | Phase | | |
 |---|---|---|
-| 0 | Toolchain and data foundation | in progress |
+| 0 | Toolchain and data foundation | gates met — real data + MT5 spec outstanding |
 | 1 | Backtest engine and cost model | **complete** |
 | 2 | Terminal MVP | partial — see below |
 | 3 | Rule baselines | not started |
