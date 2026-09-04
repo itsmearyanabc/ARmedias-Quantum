@@ -4,7 +4,7 @@
 **Horizon:** Intraday, M15–H1 entries, flat overnight and over weekends
 **Account context:** Prop firm challenge (FTMO-style rules)
 **Implementation:** C++20 core + Dear ImGui/ImPlot terminal, Python for data ingest and model training
-**Status:** Phase 0 and Phase 1 gates met; Phase 2 (terminal) partially built. Green on MSVC and GCC in CI. See [README](../README.md) for the live checklist.
+**Status:** Phase 0 and Phase 1 gates met. Phase 2 (terminal) partially built; Phase 3 (rule baselines) built but its gate **not evaluated** — that needs real tick history, not the synthetic null. Green on MSVC and GCC in CI. See [README](../README.md) for the live checklist.
 
 ---
 
