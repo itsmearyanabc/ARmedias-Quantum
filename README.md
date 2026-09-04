@@ -11,12 +11,12 @@ optimises for instead.
 
 ---
 
-## Status: Phase 0 in progress
+## Status: Phases 0-2 built, Phase 1 gate met
 
 | Phase | | |
 |---|---|---|
 | 0 | Toolchain and data foundation | in progress |
-| 1 | Backtest engine and cost model | not started |
+| 1 | Backtest engine and cost model | **gate met** — pybind11 outstanding |
 | 2 | Terminal MVP | partial — see below |
 | 3 | Rule baselines | not started |
 | 4 | Feature engine and labels | not started |
@@ -45,11 +45,39 @@ optimises for instead.
 - [ ] Real tick history ingested and verified
 - [ ] `config/symbol_spec.json` generated and committed
 
+### Phase 1 checklist
+
+All three gate criteria met, on both MSVC and GCC.
+
+- [x] Event-driven, tick-resolution engine (`cpp/core/src/engine.cpp`)
+- [x] Cost model: tick spread, directional slippage, latency, commission, swap
+- [x] MT5 semantics: lot ladder, `stops_level`, contract-size P&L
+- [x] `Strategy` interface — the same object the live engine will drive
+- [x] **Gate: reconciles to a hand calculation to the cent**, both sides
+- [x] **Gate: null model loses exactly the predicted round-turn cost**, with
+      zero sampling error by construction
+- [x] **Gate: a decade backtests in 2.2 s (Windows) / 1.4 s (Linux)** against a
+      20 s requirement — 134.9M and 211.3M ticks/s
+- [x] Cross-platform determinism: 381 trades, expectancy −0.1324 USD,
+      *identical* on MSVC and GCC
+- [ ] pybind11 bindings so Python research calls this same engine
+
+The fill asymmetries that make the model honest, each with a test:
+
+| Behaviour | Why |
+|---|---|
+| Stops fill **through** gaps | The market never traded at the stop price it jumped over |
+| Limits **never** slip | A resting limit fills at its own price; crediting the gap invents profit |
+| Spread comes from the tick | A constant spread is the commonest source of fake edge on gold |
+| Latency replays the stream forward | The price moves underneath the order |
+| Stop inside the spread is rejected | A long fills on the ask and its stop triggers on the bid |
+| Both levels hit in one tick → the stop wins | A backtest must not resolve its own ambiguity in its favour |
+
 ### Phase 2 checklist
 
-Built ahead of Phase 1 on request. The panels that display *trades* need an
-engine to produce them, so they are not here yet — they appear greyed out under
-the Trade menu rather than hidden, to keep the gap explicit.
+Built ahead of Phase 1 on request, so the trade-display panels had no engine
+to draw from at the time. That engine now exists; wiring the greyed-out panels
+to it is the next terminal work.
 
 - [x] `BarSeries` — time bars from ticks, with closed and forming kept separate
 - [x] ImGui + ImPlot via FetchContent (no vcpkg needed)
@@ -137,7 +165,15 @@ cd python && python -m bench.bench_python_scan
 ./build/msvc-release/bin/bench_tick_store data/ticks/XAUUSD XAUUSD 20000000
 ```
 
-The benchmark exits non-zero below 20M ticks/s, so CI enforces the gate.
+Run a backtest and check the Phase 1 gate — a decade of ticks in under 20 s,
+expressed as the rate that implies it:
+
+```bash
+./build/msvc-release/bin/bench_backtest data/ticks/XAUUSD XAUUSD 15000000
+```
+
+Both exit non-zero below their floor, so CI enforces the gates rather than
+relying on anyone remembering to look.
 
 ## Ingest real history
 

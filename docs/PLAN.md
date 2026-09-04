@@ -439,6 +439,10 @@ An unvalidated backtester is a random number generator with good typography. Bef
 - The cost-only null model must show negative expectancy of the *predicted* magnitude, not just "negative".
 - **Golden-file regression:** a fixed strategy over a fixed date range must produce a byte-identical trade list across builds, compilers and thread counts. This test is what keeps a refactor from silently changing your results.
 
+> **Built and measured (Phase 1).** Buy-and-hold reconciles to a hand calculation on both sides. The null model — random entries on a deliberately *flat* price — loses exactly one spread, two slippages and one commission per trade, with zero sampling error by construction; that is a direct test that the fill model and the cost model agree with each other, not a statistical one. Throughput: **a decade of ticks in 2.2 s on MSVC and 1.4 s on GCC** against the 20 s requirement.
+>
+> On determinism, be precise about what is and is not yet proven. Run-to-run determinism inside one binary is tested. Across compilers, both produce the same 381 trades and the same −0.1324 USD expectancy from the same run, which is strong evidence. A true golden-file regression — a committed expected trade list, compared byte for byte — is still outstanding, and until it exists a refactor could still change results without anything failing.
+
 ---
 
 ## 10. The terminal (`xauterm`)
