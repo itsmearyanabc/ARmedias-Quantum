@@ -322,13 +322,16 @@ PYBIND11_MODULE(xaucore, m) {
         .def_property_readonly("bar", &BarContext::bar, py::return_value_policy::copy)
         .def_property_readonly("history_size",
                                [](const BarContext& c) { return c.history.size(); })
-        .def_property_readonly("position", &BarContext::position,
-                               py::return_value_policy::copy)
+        // position and spec are reference members, and a pointer-to-member of
+        // reference type is illegal, so these go through lambdas that return by
+        // value. Copying is what we want anyway: the context is only valid for
+        // the duration of the call.
+        .def_property_readonly("position", [](const BarContext& c) { return c.position; })
+        .def_property_readonly("spec", [](const BarContext& c) { return c.spec; })
         .def_readonly("equity", &BarContext::equity)
         .def_readonly("balance", &BarContext::balance)
         .def_readonly("now_us", &BarContext::now_us)
         .def_readonly("tf", &BarContext::tf)
-        .def_property_readonly("spec", &BarContext::spec, py::return_value_policy::copy)
         .def("ago", &BarContext::ago, py::arg("n"), py::return_value_policy::copy,
              "ago(0) is the bar that just closed; ago(1) the one before it.")
         .def("has", &BarContext::has, py::arg("lookback"))

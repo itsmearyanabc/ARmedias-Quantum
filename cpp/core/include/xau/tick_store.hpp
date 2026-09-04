@@ -71,6 +71,20 @@ public:
     // a degraded mode we silently backtest on.
     static TickStore open(const std::filesystem::path& dir, std::string_view symbol);
 
+    // Move-only, and the copy has to be deleted *explicitly*.
+    //
+    // std::vector<T> advertises itself as copy-constructible whether or not T
+    // is; the copy only fails when it is instantiated. So a TickStore holding
+    // vector<TickFile> satisfies std::is_copy_constructible even though TickFile
+    // is move-only, and any generic code that trusts that trait — pybind11's
+    // class registration, for one — emits copy machinery that then refuses to
+    // compile. Saying it here makes the trait tell the truth.
+    TickStore() = default;
+    TickStore(const TickStore&) = delete;
+    TickStore& operator=(const TickStore&) = delete;
+    TickStore(TickStore&&) noexcept = default;
+    TickStore& operator=(TickStore&&) noexcept = default;
+
     [[nodiscard]] std::size_t   file_count()  const noexcept { return files_.size(); }
     [[nodiscard]] std::uint64_t total_ticks() const noexcept { return total_ticks_; }
     [[nodiscard]] TimeUs        first_ts()    const noexcept { return first_ts_; }
