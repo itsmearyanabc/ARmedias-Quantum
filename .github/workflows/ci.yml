@@ -108,6 +108,21 @@ jobs:
           done
           exit $rc
 
+      # Phase 3 report. Not a gate here: the store is synthetic, and the tool
+      # says so rather than pretending a driftless random walk can answer it.
+      - name: Baselines report
+        shell: bash
+        run: |
+          set +e
+          ./build/${{ matrix.preset }}/bin/run_baselines data/ticks/XAUUSD XAUUSD --fold-days 30 2>&1 | tee bl.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          grep -aE "^gate|^verdict|SYNTHETIC" bl.log | head -3 | while IFS= read -r line; do
+            clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+            echo "::notice::baselines: ${clean}"
+          done
+          exit $rc
+
       # The bindings must agree with the C++ suite figure for figure. Copying
       # the module next to the tests avoids PYTHONPATH separator differences
       # between Windows and Linux.

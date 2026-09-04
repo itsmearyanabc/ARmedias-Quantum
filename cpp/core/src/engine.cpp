@@ -1,5 +1,7 @@
 #include "xau/engine.hpp"
 
+#include "xau/session.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -10,23 +12,13 @@
 namespace xau {
 namespace {
 
-constexpr TimeUs kUsPerSec = 1'000'000;
-constexpr TimeUs kUsPerDay = 86'400LL * kUsPerSec;
-
-// ISO weekday, 1 = Monday .. 7 = Sunday. 1970-01-01 was a Thursday.
-int iso_weekday(TimeUs us) noexcept {
-    TimeUs days = us / kUsPerDay;
-    if (us < 0 && days * kUsPerDay != us) --days;
-    long long w = (days + 3) % 7;   // 0 = Monday
-    if (w < 0) w += 7;
-    return static_cast<int>(w) + 1;
-}
+// Calendar arithmetic lives in session.hpp. Two implementations of "which
+// weekday is this" would eventually disagree, and the one that decides triple
+// swap is not a good place to find out.
 
 // First instant at hour:00:00 UTC strictly after `us`.
 TimeUs next_rollover(TimeUs us, int hour_utc) noexcept {
-    TimeUs day = (us / kUsPerDay) * kUsPerDay;
-    if (us < 0 && day != us) day -= kUsPerDay;
-    TimeUs at = day + static_cast<TimeUs>(hour_utc) * 3600 * kUsPerSec;
+    TimeUs at = day_start(us) + static_cast<TimeUs>(hour_utc) * kUsPerHour;
     while (at <= us) at += kUsPerDay;
     return at;
 }
@@ -238,7 +230,7 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
             while (cfg_.apply_swap && t.ts_us >= next_swap) {
                 if (pos.is_open()) {
                     const double mult =
-                        (iso_weekday(next_swap) == spec.triple_swap_weekday) ? 3.0 : 1.0;
+                        (utc_weekday(next_swap) == spec.triple_swap_weekday) ? 3.0 : 1.0;
                     const double pts =
                         (pos.side == Side::Long) ? spec.swap_long_pts : spec.swap_short_pts;
                     pos.swap_usd += pts * spec.usd_per_point_per_lot() * pos.lots * mult;

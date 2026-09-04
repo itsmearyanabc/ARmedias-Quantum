@@ -4,6 +4,8 @@ add_library(xaucore STATIC
     src/bar.cpp
     src/engine.cpp
     src/baselines.cpp
+    src/rules.cpp
+    src/walk_forward.cpp
 )
 
 add_library(xau::core ALIAS xaucore)

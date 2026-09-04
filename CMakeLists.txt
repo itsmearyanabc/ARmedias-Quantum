@@ -55,6 +55,8 @@ if(XAU_BUILD_PYTHON)
     add_subdirectory(cpp/bridge/pybind)
 endif()
 
+add_subdirectory(cpp/tools)
+
 if(XAU_BUILD_TESTS)
     enable_testing()
     add_subdirectory(cpp/tests)

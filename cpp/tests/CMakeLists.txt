@@ -3,6 +3,7 @@ add_executable(xau_tests
     test_tick_store.cpp
     test_bar.cpp
     test_engine.cpp
+    test_rules.cpp
 )
 
 target_include_directories(xau_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
