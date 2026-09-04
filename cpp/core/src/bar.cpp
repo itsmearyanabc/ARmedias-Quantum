@@ -10,8 +10,6 @@ BarSeries BarSeries::build(const TickStore& store, Timeframe tf, TimeUs from_us,
     out.tf_ = tf;
     if (from_us >= to_us) return out;
 
-    const TimeUs step = timeframe_us(tf);
-
     TimeUs        cur_open = 0;
     bool          have_bar = false;
     std::uint64_t spread_sum = 0;

@@ -180,7 +180,7 @@ Visible visible_range(std::span<const Bar> bars, double x_min, double x_max) {
     return v;
 }
 
-void draw_session_bands(const AppState& app, double x_min, double x_max) {
+void draw_session_bands(double x_min, double x_max) {
     // Only when zoomed in enough to be readable; a year of bands is a smear.
     if (x_max - x_min > 8 * 86400.0) return;
 
@@ -388,7 +388,7 @@ void panel_chart(AppState& app) {
         }
         ImPlot::SetupFinish();
 
-        if (app.show_sessions) draw_session_bands(app, app.x_min, app.x_max);
+        if (app.show_sessions) draw_session_bands(app.x_min, app.x_max);
         draw_candles(app, bars, vis);
         draw_hover_readout(app, bars, vis);
 
