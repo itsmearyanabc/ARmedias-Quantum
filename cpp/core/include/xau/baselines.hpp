@@ -71,14 +71,19 @@ public:
         std::uint64_t seed = 0x5EED'1234'ABCD'0001ULL;
     };
 
-    explicit RandomEntry(Config c = {}) noexcept : cfg_(c) { rng_.state = c.seed; }
+    // Two constructors rather than a `Config c = {}` default argument: GCC
+    // rejects brace-initialising an aggregate-with-NSDMIs in a default
+    // argument inside an incomplete class, where MSVC accepts it. Spelling
+    // both out avoids the disagreement entirely.
+    RandomEntry() noexcept { rng_.state = cfg_.seed; }
+    explicit RandomEntry(const Config& c) noexcept : cfg_(c) { rng_.state = c.seed; }
 
     [[nodiscard]] const char* name() const noexcept override { return "RandomEntry(null)"; }
     [[nodiscard]] Decision on_bar(const BarContext& c) override;
 
 private:
-    Config     cfg_;
-    SplitMix64 rng_;
+    Config     cfg_{};
+    SplitMix64 rng_{};
 };
 
 }  // namespace xau
