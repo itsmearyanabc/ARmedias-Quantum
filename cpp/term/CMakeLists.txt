@@ -36,7 +36,9 @@ add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
 )
-target_include_directories(imgui PUBLIC
+# SYSTEM: xauterm compiles under /W4 /WX, and warnings raised inside a
+# third-party header would otherwise fail our build for someone else's code.
+target_include_directories(imgui SYSTEM PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends)
 target_link_libraries(imgui PUBLIC d3d11 dxgi d3dcompiler)
@@ -45,7 +47,7 @@ add_library(implot STATIC
     ${implot_SOURCE_DIR}/implot.cpp
     ${implot_SOURCE_DIR}/implot_items.cpp
 )
-target_include_directories(implot PUBLIC ${implot_SOURCE_DIR})
+target_include_directories(implot SYSTEM PUBLIC ${implot_SOURCE_DIR})
 target_link_libraries(implot PUBLIC imgui)
 
 # Third-party code does not get our warning flags; /W4 /WX on someone else's
