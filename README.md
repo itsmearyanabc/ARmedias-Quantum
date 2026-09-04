@@ -15,7 +15,7 @@ optimises for instead.
 |---|---|---|
 | 0 | Toolchain and data foundation | in progress |
 | 1 | Backtest engine and cost model | not started |
-| 2 | Terminal MVP | not started |
+| 2 | Terminal MVP | partial — see below |
 | 3 | Rule baselines | not started |
 | 4 | Feature engine and labels | not started |
 | 5 | Meta-labeling model | not started |
@@ -37,6 +37,37 @@ optimises for instead.
 - [ ] Throughput gate ≥ 20M ticks/s measured
 - [ ] Real tick history ingested and verified
 - [ ] `config/symbol_spec.json` generated and committed
+
+### Phase 2 checklist
+
+Built ahead of Phase 1 on request. The panels that display *trades* need an
+engine to produce them, so they are not here yet — they appear greyed out under
+the Trade menu rather than hidden, to keep the gap explicit.
+
+- [x] `BarSeries` — time bars from ticks, with closed and forming kept separate
+- [x] ImGui + ImPlot via FetchContent (no vcpkg needed)
+- [x] Win32/DX11 host, docking, layout persisted to `xauterm.ini`
+- [x] Dark instrument-panel theme
+- [x] Chart: candlesticks, auto-fit Y, hover OHLC readout, line fallback when
+      candles go sub-pixel
+- [x] Session shading (London, London/NY overlap)
+- [x] Volume and spread sub-plots with linked X axes
+- [x] Market panel — last, spread, **spread percentile**, session
+- [x] Store browser — click a month to jump the chart there
+- [x] Log panel
+- [ ] **Nothing here has been compiled** — no toolchain on this machine
+- [ ] Trade markers, equity/drawdown, blotter, backtest runner *(need Phase 1)*
+- [ ] Gate: step through a backtest and inspect every trade *(needs Phase 1)*
+
+Run it once you have a compiler:
+
+```bash
+cmake --preset msvc-release && cmake --build --preset msvc-release
+```
+
+```bash
+./build/msvc-release/bin/xauterm.exe data/ticks/XAUUSD XAUUSD
+```
 
 ---
 

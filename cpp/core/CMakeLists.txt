@@ -1,6 +1,7 @@
 add_library(xaucore STATIC
     src/mapped_file.cpp
     src/tick_store.cpp
+    src/bar.cpp
 )
 
 add_library(xau::core ALIAS xaucore)
