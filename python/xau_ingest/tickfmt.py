@@ -321,10 +321,26 @@ class VerifyReport:
     max_bid_pts: int = 0
     first_ts_us: int = 0
     last_ts_us: int = 0
+    synthetic_ticks: int = 0
+
+    @property
+    def mixed_provenance(self) -> bool:
+        """Real and generated ticks in the same store.
+
+        Now that both exist this is a live hazard, and a silent one: a store
+        that is half real and half synthetic produces a backtest whose result
+        means nothing, with nothing visibly wrong. Keep them in separate
+        directories.
+        """
+        return 0 < self.synthetic_ticks < self.ticks
 
     @property
     def ok(self) -> bool:
-        return self.non_monotonic == 0 and self.out_of_range == 0
+        return (
+            self.non_monotonic == 0
+            and self.out_of_range == 0
+            and not self.mixed_provenance
+        )
 
 
 def verify_store(
@@ -382,6 +398,7 @@ def verify_store(
         rep.out_of_range += int(np.count_nonzero((bid < min_pts) | (bid > max_pts)))
         rep.zero_spread += int(np.count_nonzero(spread == 0))
         rep.saturated_spread += int(np.count_nonzero(flags & TF_SPREAD_SAT))
+        rep.synthetic_ticks += int(np.count_nonzero(flags & TF_SYNTHETIC))
 
         lo, hi = int(bid.min()), int(bid.max())
         rep.min_bid_pts = lo if rep.ticks == 0 else min(rep.min_bid_pts, lo)
@@ -419,6 +436,13 @@ def format_report(rep: VerifyReport, point_den: int = XAUUSD_POINT_DEN) -> str:
         f"gaps over thresh {rep.gaps:,}   (largest {rep.largest_gap_us / 1e6:,.0f} s"
         f" at {when(rep.largest_gap_at)})",
         f"bid range        {rep.min_bid_pts / point_den:,.3f} .. {rep.max_bid_pts / point_den:,.3f} USD",
+        f"provenance       {'synthetic' if rep.synthetic_ticks == rep.ticks else 'real'}"
+        + (
+            f"   <-- MIXED: {rep.synthetic_ticks:,} of {rep.ticks:,} ticks are "
+            "synthetic. Keep real and generated data in separate directories."
+            if rep.mixed_provenance
+            else ""
+        ),
         f"verdict          {'OK' if rep.ok else 'FAILED'}",
     ]
     return "\n".join(lines)

@@ -46,14 +46,31 @@ class Session:
     vol_mult: float  # multiplier on baseline per-tick sigma
 
 
-# Gold's activity is extremely session-skewed: dead in late Asia, violent at the
-# London/NY overlap. Getting this envelope roughly right matters, because the
-# spread-to-range ratio is what decides whether an intraday edge survives costs.
-QUIET = Session("quiet", 600, 700, 0.35)
-ASIA = Session("asia", 1_800, 320, 0.55)
-LONDON = Session("london", 6_000, 180, 1.15)
-OVERLAP = Session("overlap", 9_000, 150, 1.45)
-NY_LATE = Session("ny_late", 3_500, 220, 0.85)
+# Calibrated against real Dukascopy XAUUSD ticks (January 2024, 3.06M ticks).
+# The first version of this table was guessed, and it was wrong in two ways that
+# both flattered the strategy:
+#
+#   1. It varied spread 4.7x across sessions (0.15 USD at the overlap, 0.70 at
+#      rollover). Real spread is close to FLAT: 0.327-0.350 USD across every
+#      session, a spread of about 7%. Liquidity changes the range, not the
+#      quote width.
+#
+#   2. Its volatility was 2-3x too high, so M15 ranges came out at 9.3 USD in
+#      the overlap against a real 2.88.
+#
+# Together those made the spread-to-range ratio - the number that actually
+# decides whether an intraday edge survives - roughly SEVEN TIMES too
+# favourable at the overlap: 1.6% modelled against 11.5% real.
+#
+# Range variation across sessions now comes from tick intensity alone rather
+# than a separate volatility knob, which is both simpler and closer to how the
+# real envelope behaves: a random walk's range grows with the square root of
+# the number of ticks, and real intensity varies ~15x from rollover to overlap.
+QUIET = Session("quiet", 800, 350, 1.0)
+ASIA = Session("asia", 2_400, 337, 1.0)
+LONDON = Session("london", 7_900, 327, 1.0)
+OVERLAP = Session("overlap", 11_800, 330, 1.0)
+NY_LATE = Session("ny_late", 4_600, 327, 1.0)
 
 
 def session_for(hour_utc: int) -> Session:
@@ -104,7 +121,7 @@ def generate(
     seed: int = 42,
     intensity: float = 1.0,
     start_price: float = 2650.0,
-    daily_vol: float = 0.010,
+    daily_vol: float = 0.0038,
     news_per_month: float = 8.0,
     verbose: bool = True,
 ) -> dict[str, int]:
@@ -112,8 +129,21 @@ def generate(
     rng = np.random.default_rng(seed)
     out_dir = Path(out_dir)
 
-    # Baseline per-tick sigma, calibrated so a full day of ticks accumulates
-    # roughly `daily_vol` in log terms.
+    # Per-tick sigma. `daily_vol` is calibrated so the median M15 RANGE matches
+    # real Dukascopy gold (1.74 USD), not so the daily close-to-close move
+    # matches gold's ~1%.
+    #
+    # Those two cannot both be satisfied here, and the reason is real
+    # microstructure rather than a bug: tick-to-tick changes in a live market
+    # are strongly negatively autocorrelated (bid-ask bounce), so range grows
+    # noticeably slower than the square root of tick count. A pure random walk
+    # has no such mean reversion, so matching gold's daily move would inflate
+    # intraday range by ~2.6x.
+    #
+    # Range is the right thing to match: spread-to-range is what decides whether
+    # an intraday edge survives costs, and that is the whole reason this
+    # generator exists. The consequence is that multi-day drift is understated,
+    # which does not matter for a driftless null.
     nominal_ticks_per_day = 90_000 * intensity
     base_sigma = daily_vol / np.sqrt(nominal_ticks_per_day)
 
@@ -191,7 +221,12 @@ def main(argv: list[str] | None = None) -> int:
         "--intensity", type=float, default=1.0, help="tick-rate multiplier (2.0 = twice as many)"
     )
     ap.add_argument("--start-price", type=float, default=2650.0)
-    ap.add_argument("--daily-vol", type=float, default=0.010, help="log-return vol per day")
+    ap.add_argument(
+        "--daily-vol",
+        type=float,
+        default=0.0038,
+        help="volatility scale; calibrated so M15 range matches real gold (default 0.0038)",
+    )
     args = ap.parse_args(argv)
 
     y, m = (int(x) for x in args.start.split("-"))

@@ -431,6 +431,43 @@ Two execution modes sharing one `Strategy`:
 | **Swap** | Punitive on gold; another reason to stay intraday |
 | **Requote / rejection probability** in high-vol windows | Your news-time fills are worse than you think |
 
+> **Measured, XAUUSD January 2024, 3.06M real Dukascopy ticks.** Two of the
+> assumptions above needed correcting, and the synthetic generator was rebuilt
+> against these numbers.
+>
+> **Spread is close to flat across sessions**, not session-varying: median
+> 0.327–0.350 USD everywhere, a spread of about 7%. Liquidity changes the
+> *range*, not the quote width. The generator had varied it 4.7× and was wrong.
+>
+> **Blowouts are real but rare, and much rarer than "5–20× around news"
+> suggests.** p99 is 1.3× the median, p99.9 is 2.2×, p99.99 is 6.1×, and the
+> month's maximum is 13.8× (4.54 USD). Around the 5 January NFP release the
+> *median* spread was only 1.1× normal, with a peak of 4.1×. So the blowout is
+> a p99.99 phenomenon lasting seconds, not a condition that persists through a
+> news window. The news blackout in §11 is still right — but it is protecting
+> against slippage and gap risk, not against a permanently wide quote.
+>
+> **Spread as a share of M15 range**, which is the number that decides whether
+> an intraday edge survives:
+>
+> | Session | Spread | M15 range | Spread/range |
+> |---|---|---|---|
+> | London/NY overlap | 0.330 | 2.880 | **11.5%** |
+> | London | 0.327 | 1.870 | 17.5% |
+> | New York | 0.327 | 1.690 | 19.3% |
+> | Asia | 0.337 | 1.390 | 24.2% |
+> | Rollover | 0.350 | 0.810 | 43.2% |
+>
+> This is worse than the 5–10% figure used to justify M15 when the horizon was
+> chosen. M15 is still clearly right — the same ratio at M1 would be far above
+> 50% and hopeless — but the margin is thinner than assumed, and it argues for
+> concentrating entries in the overlap and London rather than trading all day.
+>
+> **Caveat that matters more than any of the above:** Dukascopy is an
+> aggregated ECN feed and is tighter and more stable than a retail or prop-firm
+> quote. Backtesting on these spreads will *understate* what a prop account
+> pays. Measuring the firm's own spread profile (§16) is not a formality.
+
 ### Validating the engine itself
 
 An unvalidated backtester is a random number generator with good typography. Before trusting any result:

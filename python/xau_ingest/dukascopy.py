@@ -39,7 +39,7 @@ import lzma
 import struct
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -80,6 +80,15 @@ class FetchStats:
     empty: int = 0
     failed: int = 0
     ticks: int = 0
+    failures: list = field(default_factory=list)   # (url, reason) for reporting
+
+
+# Retryable server-side conditions. Distinguishing these from 404 matters more
+# than it looks: a 404 means the file does not exist, which for this feed means
+# the market was closed. A 5xx means the server did not answer, which means
+# nothing at all about whether data exists — and caching it as "empty" would
+# silently punch a hole in the history that every future run would honour.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 class DecodeError(Exception):
@@ -115,37 +124,58 @@ def fetch_hour(
     symbol: str,
     when: dt.datetime,
     cache_dir: Path,
-    retries: int = 3,
+    retries: int = 4,
     timeout: float = 30.0,
-) -> bytes | None:
-    """Raw .bi5 bytes for one hour. None means the feed has no data then.
+) -> tuple[bytes | None, str, str]:
+    """Fetch one hour. Returns (bytes, outcome, detail).
 
-    Cached on disk, so re-running an ingest costs nothing and we do not hammer
-    a free public service. An empty file in the cache means "known to be empty".
+    outcome is one of:
+      "data"    bytes to decode
+      "empty"   the feed genuinely has no ticks for that hour (404, or a
+                zero-length body). Cached, because it will never have any.
+      "failed"  we could not find out. Deliberately NOT cached: a server error
+                is not evidence that an hour is empty, and recording it as one
+                would put a permanent hole in the history that every later run
+                would faithfully reproduce.
+
+    Never raises for a single hour. A decade is ~87,600 requests and some of
+    them will fail; aborting the whole pull because one did is the wrong
+    trade — the caller counts failures and re-running fills them in.
     """
     cp = cache_path(cache_dir, symbol, when)
     if cp.exists():
-        return cp.read_bytes() or None
+        blob = cp.read_bytes()
+        return (blob, "data", "cache") if blob else (None, "empty", "cache")
 
     url = hour_url(symbol, when)
     delay = 1.0
+    detail = "unknown"
     for attempt in range(retries):
         try:
             r = session.get(url, timeout=timeout)
             if r.status_code == 404:
                 cp.parent.mkdir(parents=True, exist_ok=True)
-                cp.write_bytes(b"")  # remember the hole
-                return None
+                cp.write_bytes(b"")  # remember the hole; it is a real one
+                return None, "empty", "404"
+            if r.status_code in RETRYABLE_STATUS:
+                detail = f"HTTP {r.status_code}"
+                if attempt < retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                continue
             r.raise_for_status()
             cp.parent.mkdir(parents=True, exist_ok=True)
             cp.write_bytes(r.content)
-            return r.content or None
-        except Exception:
-            if attempt == retries - 1:
-                raise
-            time.sleep(delay)
-            delay *= 2
-    return None
+            if not r.content:
+                return None, "empty", "zero-length"
+            return r.content, "data", "downloaded"
+        except Exception as e:  # noqa: BLE001 - any transport error is retryable
+            detail = type(e).__name__
+            if attempt < retries - 1:
+                time.sleep(delay)
+                delay *= 2
+
+    return None, "failed", detail
 
 
 # ---------------------------------------------------------------------------
@@ -252,20 +282,26 @@ def ingest_month(
     hours = list(hours_of_month(year, month))
 
     def one(h: dt.datetime):
-        raw = fetch_hour(session, symbol, h, cache_dir)
-        return h, raw
+        blob, outcome, detail = fetch_hour(session, symbol, h, cache_dir)
+        return h, blob, outcome, detail
 
     # Fetch concurrently (I/O bound), then decode and write strictly in order —
     # the writer enforces monotonic timestamps and would reject shuffled hours.
     results: dict[dt.datetime, bytes | None] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for h, raw in pool.map(one, hours):
-            results[h] = raw
+        for h, blob, outcome, detail in pool.map(one, hours):
             stats.requested += 1
-            if raw is None:
+            if outcome == "data":
+                results[h] = blob
+                if detail == "cache":
+                    stats.from_cache += 1
+                else:
+                    stats.downloaded += 1
+            elif outcome == "empty":
                 stats.empty += 1
             else:
-                stats.downloaded += 1
+                stats.failed += 1
+                stats.failures.append((hour_url(symbol, h), detail))
 
     path = out_dir / f"{symbol}-{year:04d}-{month:02d}.bin"
     with TickWriter(path, symbol) as w:
@@ -273,7 +309,16 @@ def ingest_month(
             raw = results.get(h)
             if not raw:
                 continue
-            arr = decode_hour(raw, symbol, h)
+            try:
+                arr = decode_hour(raw, symbol, h)
+            except DecodeError as e:
+                # One corrupt hour must not take down a decade-long pull, but a
+                # systematic decode fault (wrong scale, reversed fields) would
+                # hit nearly every hour — so count them and let the caller
+                # decide from the rate rather than from the first failure.
+                stats.failed += 1
+                stats.failures.append((hour_url(symbol, h), f"decode: {e}"))
+                continue
             if len(arr):
                 w.write(arr)
         count = w.count
@@ -291,6 +336,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cache", default="data/raw/dukascopy")
     ap.add_argument("--workers", type=int, default=8, help="concurrent requests (be polite)")
     ap.add_argument("--verify", action="store_true", help="verify the store when done")
+    ap.add_argument(
+        "--max-failure-pct",
+        type=float,
+        default=2.0,
+        help="fail the run if more than this %% of hours could not be fetched (default 2)",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -326,10 +377,28 @@ def main(argv: list[str] | None = None) -> int:
 
     dur = time.time() - t0
     print(
-        f"\n{stats.ticks:,} ticks in {dur / 60:.1f} min "
-        f"({stats.downloaded:,} hours with data, {stats.empty:,} empty)"
+        f"\n{stats.ticks:,} ticks in {dur / 60:.1f} min\n"
+        f"hours: {stats.downloaded:,} downloaded, {stats.from_cache:,} cached, "
+        f"{stats.empty:,} empty, {stats.failed:,} failed"
     )
     print(f"{stats.ticks * 16 / 1e9:.2f} GB in the store")
+
+    if stats.failed:
+        rate = 100.0 * stats.failed / max(stats.requested, 1)
+        print(f"\n{stats.failed:,} hours failed ({rate:.1f}%). First few:")
+        for url, why in stats.failures[:5]:
+            print(f"  {why:<24} {url}")
+        print(
+            "\nFailed hours were NOT cached, so re-running fills only the gaps —\n"
+            "everything already fetched is read from the cache and costs nothing."
+        )
+        if rate > args.max_failure_pct:
+            print(
+                f"\nFAILED: {rate:.1f}% of hours could not be fetched, above the "
+                f"{args.max_failure_pct:.0f}% threshold.\n"
+                "The store is incomplete. Re-run to fill the gaps before using it."
+            )
+            return 1
 
     if args.verify:
         print()
