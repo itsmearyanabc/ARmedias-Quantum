@@ -1,5 +1,7 @@
 # XAUUSD Algorithmic Trading Terminal
 
+[![ci](https://github.com/itsmearyanabc/ARmedias-Quantum/actions/workflows/ci.yml/badge.svg)](https://github.com/itsmearyanabc/ARmedias-Quantum/actions/workflows/ci.yml)
+
 C++20 core, ImGui/ImPlot terminal, MT5 bridge. Gold intraday (M15–H1), sized for
 a prop-firm challenge.
 
@@ -33,8 +35,13 @@ optimises for instead.
 - [x] Dukascopy fetch + decode (written, tested offline, **not yet run**)
 - [x] MT5 spec dump script (written, **needs MT5 installed to run**)
 - [x] Python test suite — 25 tests green
-- [ ] **C++ toolchain installed** — blocks building anything
-- [ ] Throughput gate ≥ 20M ticks/s measured
+- [x] **CI green on MSVC and GCC** — configure, build, tests, gate
+- [x] **Throughput gate: 722M ticks/s (11.6 GB/s)** against a 20M/s target —
+      memory-bandwidth-bound, as designed. Caveat: that is the *reader* doing
+      trivial work; a real strategy will pull it well down, which is why the
+      gate is set conservatively.
+- [ ] C++ toolchain installed **locally** — CI builds it, but you need MSVC to
+      run `xauterm` on this machine
 - [ ] Real tick history ingested and verified
 - [ ] `config/symbol_spec.json` generated and committed
 
@@ -55,7 +62,8 @@ the Trade menu rather than hidden, to keep the gap explicit.
 - [x] Market panel — last, spread, **spread percentile**, session
 - [x] Store browser — click a month to jump the chart there
 - [x] Log panel
-- [ ] **Nothing here has been compiled** — no toolchain on this machine
+- [x] Compiles clean under MSVC `/W4 /WX` in CI
+- [ ] **Never actually run** — CI builds it but cannot open a window
 - [ ] Trade markers, equity/drawdown, blotter, backtest runner *(need Phase 1)*
 - [ ] Gate: step through a backtest and inspect every trade *(needs Phase 1)*
 

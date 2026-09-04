@@ -183,19 +183,26 @@ C++ is the right call here, but for a specific reason worth being precise about,
 
 The validation methods in §8 that actually protect you from overfitting — Combinatorial Purged CV, Deflated Sharpe, PBO — require **hundreds to thousands of full backtest paths**. That turns a per-pass cost into a per-experiment cost, and the per-experiment cost decides whether you run the validation after every change or only when you can spare a night.
 
-**Measured on this machine** (`python/bench/bench_python_scan.py`, i5-1334U, 12 threads), on the real tick format:
+**Measured**, both sides, on the real tick format doing the same trivial per-tick work (running sum, min/max, one comparison):
 
-| Replay mode | Throughput | 1000-path CPCV, 12 cores |
+| Replay mode | Throughput | Measured where |
 |---|---|---|
-| Python, per-tick event loop | ~1.0–1.25M ticks/s | **~5.6 hours** |
-| C++ target (Phase 0 gate) | ≥ 20M ticks/s | **~21 minutes** |
-| numpy vectorised | ~84M ticks/s | *not applicable — see below* |
+| Python, per-tick event loop | ~1.0–1.25M ticks/s | i5-1334U — `python/bench/bench_python_scan.py` |
+| numpy, vectorised | ~84M ticks/s | same machine — *but see below* |
+| **C++ `TickStore` scan** | **722M ticks/s, 11.6 GB/s** | CI — `cpp/bench/bench_tick_store` |
 
-So the honest claim is **~16× on the event-driven path**, and it widens as the strategy does more per-tick work: Python pays interpretation overhead on every operation, C++ does not. Overnight versus a coffee break is the difference between validating continuously and validating once.
+That is **~600× on pure iteration**, and at 11.6 GB/s it is memory-bandwidth-bound rather than compute-bound, which was the design target for the store.
+
+Two caveats that matter more than the headline:
+
+- The C++ figure is a **reader** benchmark doing trivial work. A real strategy — features, barrier checks, order simulation — will pull it well down, plausibly into 20–100M ticks/s. That is exactly why the Phase 0 gate is a conservative **20M/s** rather than whatever the reader happens to manage.
+- **Python does not degrade the same way**, because it is already dominated by interpreter overhead rather than by the work itself: adding a token EMA and two barrier checks moved it from 1.00 to 1.25M ticks/s. So expect the practical gap, once the Phase 1 engine actually does something, to land around **20–100×**.
+
+A 1000-path CPCV over ~300M ticks on 12 cores: **~5.6 hours** in Python, **~35 seconds** at the measured reader rate, a few minutes at the conservative gate rate. Any of those is the difference between validating after every change and validating once.
 
 **Why not just vectorise in numpy?** Because whether a stop is hit depends on the state the previous tick left. That sequential dependency is exactly what vectorisation removes. numpy is fine for the fast screening pass in §9 and useless for the event-driven engine.
 
-*(An earlier draft of this plan claimed ~50k ticks/s for Python and "days to weeks" per experiment. Both were wrong by more than an order of magnitude — corrected above from measurement. The C++ decision survives the correction, but on a narrower margin than first stated, and the terminal UI and MT5 DLL bridge arguments below are unaffected either way.)*
+> *Revision history, because this number has moved twice and both moves mattered.* Rev 1 claimed ~50k ticks/s for Python and "days to weeks" per experiment — far too pessimistic about Python. Rev 2 corrected Python to ~1M ticks/s but compared it against the 20M/s **gate** instead of measured C++, yielding "~16×" — too pessimistic about C++. The table above is measured on both sides. The decision was never in doubt; the honest size of the margin was.
 
 ### Where C++ earns its keep
 
