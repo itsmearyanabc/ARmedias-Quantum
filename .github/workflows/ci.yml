@@ -80,9 +80,21 @@ jobs:
           python -m xau_ingest.synth --months 3 --out ../data/ticks/XAUUSD
         working-directory: python
 
+      # Publishes the measured throughput as a notice annotation. The Phase 0
+      # acceptance criterion is a number, so it should be readable without
+      # digging through an authenticated job log.
       - name: Throughput gate
-        run: ./build/${{ matrix.preset }}/bin/bench_tick_store data/ticks/XAUUSD XAUUSD 20000000
         shell: bash
+        run: |
+          set +e
+          ./build/${{ matrix.preset }}/bin/bench_tick_store data/ticks/XAUUSD XAUUSD 20000000 2>&1 | tee bench.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          grep -aE "M ticks/s|^gate|^files|^store" bench.log | while IFS= read -r line; do
+            clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+            echo "::notice::${clean}"
+          done
+          exit $rc
 
   python:
     name: python
