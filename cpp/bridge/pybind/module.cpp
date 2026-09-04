@@ -17,6 +17,10 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+// TickStore::open takes a std::filesystem::path, and pybind11 has no caster for
+// it without this. Missing it does not fail the build; it fails at call time
+// with "incompatible function arguments", which is a much worse place to find out.
+#include <pybind11/stl/filesystem.h>
 
 #include "xau/bar.hpp"
 #include "xau/baselines.hpp"

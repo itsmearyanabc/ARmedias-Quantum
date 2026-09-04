@@ -114,11 +114,15 @@ jobs:
       - name: Binding tests
         shell: bash
         run: |
-          if ! cp build/${{ matrix.preset }}/python/xaucore* python/ 2>/dev/null; then
+          out="build/${{ matrix.preset }}/python"
+          mod=$(ls "$out"/xaucore*.pyd "$out"/xaucore*.so 2>/dev/null | head -1)
+          if [ -z "$mod" ]; then
             echo "::error::xaucore module not found; the build skipped it"
-            ls -R build/${{ matrix.preset }}/python 2>&1 || true
+            ls -R "$out" 2>&1 || true
             exit 1
           fi
+          echo "using $mod"
+          cp "$mod" python/
           cd python
           python -c "import xaucore; print('xaucore', xaucore.__version__)"
           set -o pipefail

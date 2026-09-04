@@ -20,10 +20,15 @@ FetchContent_MakeAvailable(pybind11)
 
 pybind11_add_module(xaucore_py MODULE module.cpp)
 
+# ARCHIVE too, not just LIBRARY/RUNTIME. A .pyd exports PyInit_xaucore, so MSVC
+# emits an import library beside it — which would land in the shared lib/ output
+# directory as xaucore.lib and collide with the static core library of the same
+# name (LNK1149). Keeping all of the module's outputs together avoids it.
 set_target_properties(xaucore_py PROPERTIES
     OUTPUT_NAME              xaucore
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python")
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python")
 
 # Deliberately NOT xau_flags: pybind11's headers do not compile clean under
 # /W4 /WX, and failing our build over someone else's warnings helps nobody.
