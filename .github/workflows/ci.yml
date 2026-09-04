@@ -114,17 +114,27 @@ jobs:
       - name: Binding tests
         shell: bash
         run: |
+          # GitHub runs `shell: bash` with -eo pipefail. `ls` on a glob that
+          # matches nothing exits 2, which killed this step before it could say
+          # anything useful. A loop with -f tests instead: an unmatched glob
+          # stays literal and simply fails the test.
           out="build/${{ matrix.preset }}/python"
-          mod=$(ls "$out"/xaucore*.pyd "$out"/xaucore*.so 2>/dev/null | head -1)
+          mod=""
+          for f in "$out"/xaucore*.pyd "$out"/xaucore*.so; do
+            if [ -f "$f" ]; then mod="$f"; break; fi
+          done
           if [ -z "$mod" ]; then
-            echo "::error::xaucore module not found; the build skipped it"
+            echo "::error::xaucore module not found in $out; the build skipped it"
             ls -R "$out" 2>&1 || true
             exit 1
           fi
           echo "using $mod"
           cp "$mod" python/
           cd python
-          python -c "import xaucore; print('xaucore', xaucore.__version__)"
+          if ! python -c "import xaucore; print('xaucore', xaucore.__version__)"; then
+            echo "::error::import xaucore failed"
+            exit 1
+          fi
           set -o pipefail
           if python -m pytest tests/test_bindings.py -q --tb=line 2>&1 | tee ../bind.log; then
             tail -3 ../bind.log | while IFS= read -r line; do
