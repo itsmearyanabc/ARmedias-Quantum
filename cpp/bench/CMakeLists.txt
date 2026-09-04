@@ -5,3 +5,6 @@ target_link_libraries(bench_tick_store PRIVATE xau::core xau_flags)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     message(STATUS "bench: Debug build — throughput numbers will not be meaningful")
 endif()
+
+add_executable(bench_backtest bench_backtest.cpp)
+target_link_libraries(bench_backtest PRIVATE xau::core xau_flags)

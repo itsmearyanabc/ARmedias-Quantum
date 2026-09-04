@@ -6,6 +6,7 @@
 // golden-file fixtures.
 #pragma once
 
+#include <cmath>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -37,6 +38,18 @@ void check_eq(const char* file, int line, const char* expr, const A& a, const B&
     }
 }
 
+inline void check_near(const char* file, int line, const char* expr, double a, double b,
+                       double tol) {
+    const double diff = std::fabs(a - b);
+    if (!(diff <= tol)) {
+        std::ostringstream os;
+        os.precision(12);
+        os << expr << "  (left = " << a << ", right = " << b << ", diff = " << diff
+           << ", tol = " << tol << ')';
+        report_failure(file, line, os.str());
+    }
+}
+
 }  // namespace tst
 
 #define XAU_TEST(name)                                  \
@@ -58,6 +71,9 @@ void check_eq(const char* file, int line, const char* expr, const A& a, const B&
     } while (0)
 
 #define CHECK_EQ(a, b) ::tst::check_eq(__FILE__, __LINE__, #a " == " #b, (a), (b))
+
+#define CHECK_NEAR(a, b, tol) \
+    ::tst::check_near(__FILE__, __LINE__, #a " ~= " #b, (a), (b), (tol))
 
 #define CHECK_THROWS(expr)                                                        \
     do {                                                                          \

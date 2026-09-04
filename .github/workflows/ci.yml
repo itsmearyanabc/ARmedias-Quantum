@@ -96,6 +96,21 @@ jobs:
           done
           exit $rc
 
+      # Phase 1 gate: a decade of ticks must backtest in under 20 s, expressed
+      # as the rate that implies it (300M ticks / 20 s = 15M ticks/s).
+      - name: Backtest gate
+        shell: bash
+        run: |
+          set +e
+          ./build/${{ matrix.preset }}/bin/bench_backtest data/ticks/XAUUSD XAUUSD 15000000 2>&1 | tee bt.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          grep -aE "M ticks/s|^gate|^trades|^net profit|^expectancy|WARNING" bt.log | head -12 | while IFS= read -r line; do
+            clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+            echo "::notice::${clean}"
+          done
+          exit $rc
+
   python:
     name: python
     runs-on: ubuntu-latest
