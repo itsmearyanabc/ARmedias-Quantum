@@ -40,3 +40,6 @@ venv/
 .vscode/
 .idea/
 CMakeUserPresets.json
+
+# Built extension module, copied next to the tests by CI
+python/xaucore*

@@ -42,12 +42,17 @@ else()
         $<$<BOOL:${XAU_WERROR}>:-Werror>)
 endif()
 
-option(XAU_BUILD_TERM "Build the xauterm terminal (Windows only)" ON)
+option(XAU_BUILD_TERM   "Build the xauterm terminal (Windows only)" ON)
+option(XAU_BUILD_PYTHON "Build the xaucore Python extension module" ON)
 
 add_subdirectory(cpp/core)
 
 if(XAU_BUILD_TERM)
     add_subdirectory(cpp/term)
+endif()
+
+if(XAU_BUILD_PYTHON)
+    add_subdirectory(cpp/bridge/pybind)
 endif()
 
 if(XAU_BUILD_TESTS)

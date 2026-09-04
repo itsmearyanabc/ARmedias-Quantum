@@ -26,6 +26,16 @@ jobs:
         with:
           arch: x64
 
+      # Before Configure: CMake needs the development headers to build the
+      # xaucore extension module, and silently skips it if they are missing.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python packages
+        run: python -m pip install numpy pytest
+
       - name: Install Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
@@ -34,8 +44,7 @@ jobs:
 
       # Compiler output is republished as ::error:: annotations. Raw job logs
       # need an authenticated token; annotations do not, so this makes a failed
-      # build diagnosable from the public API instead of only by opening the
-      # web UI.
+      # build diagnosable from the public API instead of only in the web UI.
       - name: Build
         shell: bash
         run: |
@@ -62,27 +71,15 @@ jobs:
           grep -aE "FAIL|Failed|error" test.log | head -12 \
             | while IFS= read -r line; do
                 clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
-                echo "::error::${clean}"
+                echo "::notice::${clean}"
               done
           exit 1
 
-      # The throughput gate needs data. Generate a synthetic store, then hold
-      # the reader to >= 20M ticks/s (docs/PLAN.md section 3). A regression here
-      # fails the build rather than going unnoticed.
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Generate synthetic ticks
-        run: |
-          python -m pip install numpy
-          python -m xau_ingest.synth --months 3 --out ../data/ticks/XAUUSD
+        run: python -m xau_ingest.synth --months 3 --out ../data/ticks/XAUUSD
         working-directory: python
 
-      # Publishes the measured throughput as a notice annotation. The Phase 0
-      # acceptance criterion is a number, so it should be readable without
-      # digging through an authenticated job log.
+      # Phase 0 gate: the tick reader must sustain >= 20M ticks/s on one core.
       - name: Throughput gate
         shell: bash
         run: |
@@ -111,6 +108,33 @@ jobs:
           done
           exit $rc
 
+      # The bindings must agree with the C++ suite figure for figure. Copying
+      # the module next to the tests avoids PYTHONPATH separator differences
+      # between Windows and Linux.
+      - name: Binding tests
+        shell: bash
+        run: |
+          if ! cp build/${{ matrix.preset }}/python/xaucore* python/ 2>/dev/null; then
+            echo "::error::xaucore module not found; the build skipped it"
+            ls -R build/${{ matrix.preset }}/python 2>&1 || true
+            exit 1
+          fi
+          cd python
+          python -c "import xaucore; print('xaucore', xaucore.__version__)"
+          set -o pipefail
+          if python -m pytest tests/test_bindings.py -q 2>&1 | tee ../bind.log; then
+            tail -3 ../bind.log | while IFS= read -r line; do
+              clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+              echo "::notice::bindings: ${clean}"
+            done
+            exit 0
+          fi
+          grep -aE "assert|Error|FAILED|error" ../bind.log | head -12 | while IFS= read -r line; do
+            clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error::${clean}"
+          done
+          exit 1
+
   python:
     name: python
     runs-on: ubuntu-latest
@@ -122,6 +146,7 @@ jobs:
       - name: Install
         run: python -m pip install numpy requests pytest
       - name: Tests
+        # test_bindings.py skips here: this job never builds the extension.
         run: python -m pytest python/tests -q
       - name: End-to-end generate and verify
         run: |
