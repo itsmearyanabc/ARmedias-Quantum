@@ -11,12 +11,12 @@ optimises for instead.
 
 ---
 
-## Status: Phases 0-2 built, Phase 1 gate met
+## Status: Phases 0 and 1 complete, Phase 2 partial
 
 | Phase | | |
 |---|---|---|
 | 0 | Toolchain and data foundation | in progress |
-| 1 | Backtest engine and cost model | **gate met** — pybind11 outstanding |
+| 1 | Backtest engine and cost model | **complete** |
 | 2 | Terminal MVP | partial — see below |
 | 3 | Rule baselines | not started |
 | 4 | Feature engine and labels | not started |
@@ -60,7 +60,9 @@ All three gate criteria met, on both MSVC and GCC.
       20 s requirement — 134.9M and 211.3M ticks/s
 - [x] Cross-platform determinism: 381 trades, expectancy −0.1324 USD,
       *identical* on MSVC and GCC
-- [ ] pybind11 bindings so Python research calls this same engine
+- [x] pybind11 bindings — Python research drives this same engine
+- [x] 11 binding tests green on both platforms, two of them mirroring the C++
+      gate figure for figure (42.00 USD reconciliation, −3.30 USD/trade null)
 
 The fill asymmetries that make the model honest, each with a test:
 
@@ -174,6 +176,60 @@ expressed as the rate that implies it:
 
 Both exit non-zero below their floor, so CI enforces the gates rather than
 relying on anyone remembering to look.
+
+## Use the engine from Python
+
+The bindings exist so research never reimplements the engine. Optuna, the
+purged-CV splitter and the DSR/PBO statistics stay in Python; every backtest
+they evaluate runs through the same C++ engine, fill model and costs the live
+system will use.
+
+```bash
+cmake --preset msvc-release && cmake --build --preset msvc-release
+```
+
+```bash
+cp build/msvc-release/python/xaucore.*.pyd python/
+```
+
+```python
+import xaucore
+
+store = xaucore.TickStore.open("data/ticks/XAUUSD", "XAUUSD")
+
+cfg = xaucore.BacktestConfig()
+cfg.tf = xaucore.Timeframe.M15
+cfg.costs.commission_per_lot_round_usd = 7.0
+
+class Breakout(xaucore.Strategy):
+    def __init__(self):
+        super().__init__("Breakout", warmup_bars=20)
+
+    def on_bar(self, ctx):
+        if ctx.position.is_open():
+            return xaucore.Decision.hold()
+        highs = ctx.recent_highs(20)
+        if ctx.bar.close > highs[:-1].max():
+            return xaucore.Decision.enter(xaucore.Side.LONG, sl_dist_pts=2000,
+                                          tp_dist_pts=4000, lots=0.01)
+        return xaucore.Decision.hold()
+
+r = xaucore.BacktestEngine(store, cfg).run(Breakout())
+print(r.summary())
+print(r.trades["net_usd"].sum())          # numpy structured array
+```
+
+`Strategy` is a **per-bar** interface, which is what makes a Python strategy
+viable: a decade of M15 is ~350k calls, so the GIL round trip costs a fraction
+of a second. A per-tick Python callback over 300M ticks would be hopeless, and
+the interface deliberately does not offer one. `run()` releases the GIL, so a
+C++ strategy leaves other Python threads free for parallel Optuna trials.
+
+Two restrictions worth knowing: `name` and `warmup_bars` are fixed at
+construction rather than dispatched to Python (both are `noexcept` in C++, and
+an exception crossing that boundary would abort), and the `BarContext` is only
+valid for the duration of the call — copy out what you need rather than storing
+it.
 
 ## Ingest real history
 

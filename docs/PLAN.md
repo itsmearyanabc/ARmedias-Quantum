@@ -381,7 +381,7 @@ Do not skip ahead. Each step exists to make the next one interpretable.
 
 **Deep learning is not where the edge is at this data scale.** Do not start there. A transformer on 40k M15 bars will overfit magnificently and teach you nothing.
 
-Hyperparameters via **Optuna, with the objective evaluated by `xaucore` through pybind11** over purged CV — the search runs in Python, the work happens in C++. Hard, *recorded* trial cap (~100). The trial count feeds the deflated-Sharpe correction in §8; if you do not count your trials honestly, you cannot know whether your result is real.
+Hyperparameters via **Optuna, with the objective evaluated by `xaucore` through pybind11** over purged CV — the search runs in Python, the work happens in C++. *(Built in Phase 1. The binding suite mirrors two C++ gate tests figure for figure, so if Python ever drifts onto a different code path both suites fail.)* Hard, *recorded* trial cap (~100). The trial count feeds the deflated-Sharpe correction in §8; if you do not count your trials honestly, you cannot know whether your result is real.
 
 ---
 
