@@ -11,13 +11,13 @@ optimises for instead.
 
 ---
 
-## Status: Phases 1 and 3 built · everything now waits on real tick data
+## Status: builds and runs locally · Phase 3 gate waits on the tick ingest
 
 | Phase | | |
 |---|---|---|
 | 0 | Toolchain and data foundation | gates met — real data + MT5 spec outstanding |
 | 1 | Backtest engine and cost model | **complete** |
-| 2 | Terminal MVP | code complete — **never run** |
+| 2 | Terminal MVP | **runs** — gate signed |
 | 3 | Rule baselines | built — **gate blocked on real data** |
 | 4 | Feature engine and labels | not started |
 | 5 | Meta-labeling model | not started |
@@ -40,8 +40,9 @@ optimises for instead.
       memory-bandwidth-bound, as designed. Caveat: that is the *reader* doing
       trivial work; a real strategy will pull it well down, which is why the
       gate is set conservatively.
-- [ ] C++ toolchain installed **locally** — CI builds it, but you need MSVC to
-      run `xauterm` on this machine
+- [x] C++ toolchain installed locally — MSVC 19.44 (VS 2022 Build Tools 17.14)
+      plus CMake 4.4.3. 54 C++ tests, 11 binding tests and 25 Python tests all
+      pass on this machine, not just in CI.
 - [ ] Real tick history ingested and verified
 - [ ] `config/symbol_spec.json` generated and committed
 
@@ -105,12 +106,15 @@ to draw from at the time. They are wired up now.
 - [x] `[` and `]` step through trades, framing each with context either side
 - [x] Runs off the render thread — a decade is seconds of work and freezing the
       window for it is unforgivable once
-- [ ] **Never actually run.** CI builds it but cannot open a window, and there
-      is no toolchain on this machine. Everything above is unverified by
-      execution.
+- [x] **Actually runs.** Window opens, responds, persists its docking layout.
 
-The gate — *step through a backtest and inspect every individual trade* — is
-implemented but cannot be signed off until someone runs it.
+Running it immediately found a bug CI structurally could not: a `WIN32`
+executable with `wWinMain` links `wWinMainCRTStartup`, which populates
+`__wargv` and leaves **`__argv` null**. Reading `__argv[1]` was a null
+dereference, so the terminal died with `0xC0000005` before drawing a frame —
+whenever it was given arguments, which is exactly what the launch command in
+this file does. It compiled clean, linked clean, and passed CI on both
+platforms, because CI never opens a window.
 
 Run it once you have a compiler:
 
@@ -161,9 +165,9 @@ real data is in place.
 
 ## Prerequisites
 
-**A C++ toolchain — not yet installed on this machine.** Visual Studio 2022
-Build Tools with the Desktop C++ workload; it bundles MSVC x64, the Windows SDK,
-CMake and Ninja in one install:
+**A C++ toolchain.** Visual Studio 2022 Build Tools with the Desktop C++
+workload — MSVC x64, the Windows SDK, CMake and Ninja in one install. Already
+installed here (MSVC 19.44); this is the command if you need it elsewhere:
 
 ```bash
 winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
@@ -178,6 +182,13 @@ sandboxed `site-packages` interferes with native modules and DLL loading.
 
 ```bash
 python -m pip install -r python/requirements.txt
+```
+
+`cl.exe` is not on `PATH` by default. Either use the *x64 Native Tools Command
+Prompt*, or initialise the environment first:
+
+```bash
+call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 ```
 
 ---
