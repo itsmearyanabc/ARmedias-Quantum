@@ -245,14 +245,32 @@ def format_report(rep: AuditReport, expected_months: int = 0) -> str:
     out.append("\ncoverage")
     if expected_months and rep.files < expected_months:
         out.append(f"  MISSING {expected_months - rep.files} of {expected_months} months")
-    counts = np.array(list(rep.months.values()), dtype=float)
+    # Against a LOCAL median, not a decade-wide one. Tick density on this feed
+    # more than doubled between 2015 and 2024 (25.7M ticks a year to 56.2M), so
+    # a decade median sits far above any 2015 month and flags the whole year as
+    # "lost hours" when every hour of it is present in the cache. The question
+    # this check exists to answer is "is this month thin compared to the months
+    # around it", which is a question about its neighbours.
+    keys = sorted(rep.months)
+    counts = np.array([rep.months[k] for k in keys], dtype=float)
     med = float(np.median(counts)) if len(counts) else 0.0
-    thin = [(k, v) for k, v in rep.months.items() if med > 0 and v < 0.55 * med]
-    out.append(f"  median month     {med:,.0f} ticks")
+
+    WINDOW = 13  # ~a year, centred, so a month is judged against its own regime
+    thin = []
+    for i, k in enumerate(keys):
+        lo = max(0, i - WINDOW // 2)
+        local = counts[lo : lo + WINDOW]
+        if len(local) == 0:
+            continue
+        lmed = float(np.median(local))
+        if lmed > 0 and counts[i] < 0.55 * lmed:
+            thin.append((k, rep.months[k], counts[i] / lmed * 100.0))
+
+    out.append(f"  median month     {med:,.0f} ticks (decade), local window {WINDOW} months")
     if thin:
-        out.append(f"  {len(thin)} month(s) well below median - likely lost hours:")
-        for k, v in thin[:10]:
-            out.append(f"    {k}   {v:>10,}   ({v / med * 100:.0f}% of median)")
+        out.append(f"  {len(thin)} month(s) well below their neighbours - likely lost hours:")
+        for k, v, pct in thin[:10]:
+            out.append(f"    {k}   {v:>10,}   ({pct:.0f}% of local median)")
     else:
         out.append("  every month within range of its neighbours")
 
