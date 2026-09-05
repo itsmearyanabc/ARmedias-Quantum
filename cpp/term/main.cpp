@@ -16,7 +16,10 @@
 #include <shellapi.h>
 #include <tchar.h>
 
+#include <cctype>
+#include <cstdlib>
 #include <exception>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -119,6 +122,57 @@ std::vector<std::string> command_line_args() {
     return out;
 }
 
+bool starts_with_ci(const std::string& s, const std::string& prefix) {
+    if (prefix.empty() || prefix.size() > s.size()) return false;
+    for (std::size_t i = 0; i < prefix.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(s[i])) !=
+            std::tolower(static_cast<unsigned char>(prefix[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+struct Options {
+    std::string    store_dir = "data/ticks/XAUUSD";
+    std::string    symbol = "XAUUSD";
+    std::string    strategy;
+    double         lots = 0.10;
+    xau::Timeframe tf = xau::Timeframe::M15;
+    bool           run = false;
+};
+
+// xauterm [store_dir] [symbol] [--tf M15] [--strategy Name] [--lots X] [--run]
+//
+// --run exists so the terminal can be launched into a finished backtest rather
+// than an empty one. That makes it demonstrable and scriptable, and it is the
+// only way to see the trade panels without clicking.
+Options parse_options(const std::vector<std::string>& a) {
+    Options o;
+    int     positional = 0;
+    for (std::size_t i = 1; i < a.size(); ++i) {
+        const std::string& s = a[i];
+        if (s == "--run") {
+            o.run = true;
+        } else if (s == "--strategy" && i + 1 < a.size()) {
+            o.strategy = a[++i];
+        } else if (s == "--lots" && i + 1 < a.size()) {
+            o.lots = std::atof(a[++i].c_str());
+        } else if (s == "--tf" && i + 1 < a.size()) {
+            const std::string want = a[++i];
+            for (int k = 0; k < static_cast<int>(xau::Timeframe::COUNT); ++k) {
+                const auto cand = static_cast<xau::Timeframe>(k);
+                if (want == xau::timeframe_name(cand)) o.tf = cand;
+            }
+        } else if (!s.empty() && s[0] != '-') {
+            if (positional == 0) o.store_dir = s;
+            else if (positional == 1) o.symbol = s;
+            ++positional;
+        }
+    }
+    return o;
+}
+
 LRESULT WINAPI wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) return true;
 
@@ -154,8 +208,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     wc.lpszClassName = L"xauterm";
     ::RegisterClassExW(&wc);
 
+    // Fit the monitor's work area rather than a hardcoded size. Opening larger
+    // than the screen is a bug on its own, and it also distorts the default
+    // dock layout: the nodes get sized for a viewport that never exists, and
+    // the side panel ends up a few pixels wide once the window is clamped.
+    RECT work{};
+    if (!::SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+        work = RECT{0, 0, 1280, 800};
+    }
+    const LONG avail_w = work.right - work.left;
+    const LONG avail_h = work.bottom - work.top;
+    const int  win_w = static_cast<int>(avail_w < 1680 ? avail_w : 1680);
+    const int  win_h = static_cast<int>(avail_h < 980 ? avail_h : 980);
+
     HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"xauterm  -  XAUUSD", WS_OVERLAPPEDWINDOW,
-                                80, 60, 1680, 980, nullptr, nullptr, inst, nullptr);
+                                static_cast<int>(work.left), static_cast<int>(work.top), win_w,
+                                win_h, nullptr, nullptr, inst, nullptr);
     if (!create_device(hwnd)) {
         destroy_device();
         ::UnregisterClassW(wc.lpszClassName, inst);
@@ -181,12 +249,28 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_device, g_context);
 
-    xauterm::AppState              app;
-    const std::vector<std::string> args = command_line_args();
-    if (args.size() > 1) app.store_dir = args[1];
-    if (args.size() > 2) app.symbol = args[2];
+    xauterm::AppState app;
+    const Options     opt = parse_options(command_line_args());
+    app.store_dir = opt.store_dir;
+    app.symbol = opt.symbol;
+    app.tf = opt.tf;
+    app.lots = opt.lots;
+
+    if (!opt.strategy.empty()) {
+        // Prefix match, case-insensitively: one registry entry is called
+        // "RandomEntry (null)", which is awkward to type on a command line.
+        const std::span<const xau::BaselineEntry> reg = xau::baseline_registry();
+        for (int i = 0; i < static_cast<int>(reg.size()); ++i) {
+            if (starts_with_ci(reg[static_cast<std::size_t>(i)].name, opt.strategy)) {
+                app.strategy_index = i;
+                break;
+            }
+        }
+    }
+
     app.log.info("xauterm starting");
     xauterm::open_store(app);
+    if (opt.run) xauterm::start_backtest(app);
 
     const float clear[4] = {0.063f, 0.070f, 0.082f, 1.0f};
     bool        running = true;

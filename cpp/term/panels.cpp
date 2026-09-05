@@ -3,6 +3,7 @@
 #include "xau/session.hpp"
 
 #include "imgui.h"
+#include "imgui_internal.h"   // DockBuilder, for the default layout
 #include "implot.h"
 
 #include <algorithm>
@@ -866,27 +867,28 @@ void panel_runner(AppState& app) {
     ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
 
+    // One control per row. An InputDouble carries its step buttons and puts its
+    // label to the RIGHT, so two side by side overflow a docked side panel and
+    // the labels get clipped.
     ImGui::Spacing();
-    ImGui::SetNextItemWidth(110);
+    ImGui::SetNextItemWidth(96);
     ImGui::InputDouble("lots", &app.lots, 0.01, 0.10, "%.2f");
-    ImGui::SameLine(0, 18);
-    ImGui::SetNextItemWidth(110);
+    ImGui::SetNextItemWidth(96);
     ImGui::InputDouble("balance", &app.initial_balance, 1000.0, 5000.0, "%.0f");
-    ImGui::SetNextItemWidth(110);
-    ImGui::InputDouble("commission/lot", &app.commission, 1.0, 5.0, "%.2f");
-    ImGui::SameLine(0, 18);
-    ImGui::Checkbox("swap", &app.apply_swap);
+    ImGui::SetNextItemWidth(96);
+    ImGui::InputDouble("commission", &app.commission, 1.0, 5.0, "%.2f");
+    ImGui::Checkbox("apply swap", &app.apply_swap);
 
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
-    ImGui::TextUnformatted("cost stress - a strategy has to survive 2x (PLAN section 8)");
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted("cost stress - must survive 2x (PLAN section 8)");
+    ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
-    ImGui::SetNextItemWidth(90);
+    ImGui::SetNextItemWidth(80);
     ImGui::InputDouble("spread x", &app.spread_mult, 0.25, 1.0, "%.2f");
-    ImGui::SameLine(0, 14);
-    ImGui::SetNextItemWidth(90);
+    ImGui::SetNextItemWidth(80);
     ImGui::InputDouble("slip x", &app.slippage_mult, 0.25, 1.0, "%.2f");
-    ImGui::SameLine(0, 14);
     if (ImGui::Button("1x")) {
         app.spread_mult = 1.0;
         app.slippage_mult = 1.0;
@@ -1129,9 +1131,60 @@ void panel_blotter(AppState& app) {
 // ---------------------------------------------------------------------------
 
 void draw_ui(AppState& app) {
-    // Signature is (dockspace_id, viewport, flags, window_class) as of the
-    // pinned imgui v1.90.9-docking. Passing 0 lets ImGui derive the id.
-    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
+    // An explicit host window rather than DockSpaceOverViewport, so the default
+    // layout can be built BEFORE the dockspace is submitted. Building it
+    // afterwards - removing and re-adding a node the same frame it was already
+    // submitted - left the split ratios ignored and the side panel a few pixels
+    // wide, which looks exactly like a broken window.
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin("##dockhost", nullptr,
+                 ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground);
+    ImGui::PopStyleVar(3);
+
+    const ImGuiID dock_id = ImGui::GetID("xauterm_dock");
+
+    // Built once, and only when there is no saved layout. A restored
+    // xauterm.ini always wins: its node is already split, so we leave it alone.
+    static bool layout_checked = false;
+    if (!layout_checked) {
+        layout_checked = true;
+        const ImGuiDockNode* node = ImGui::DockBuilderGetNode(dock_id);
+        if (node == nullptr || node->IsLeafNode()) {
+            ImGui::DockBuilderRemoveNode(dock_id);
+            ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(dock_id, vp->WorkSize);
+
+            // Both outputs captured explicitly; relying on the return value
+            // alone put the side panel on the wrong side.
+            ImGuiID right = 0, centre = 0, bottom = 0, right_bottom = 0, right_top = 0;
+            ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Right, 0.26f, &right, &centre);
+            ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.32f, &bottom, &centre);
+            ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.45f, &right_bottom, &right_top);
+
+            // Price dominates; trades sit under it; controls and equity to the
+            // side. Chart and blotter are what you actually read.
+            ImGui::DockBuilderDockWindow("Chart", centre);
+            ImGui::DockBuilderDockWindow("Trades", bottom);
+            ImGui::DockBuilderDockWindow("Log", bottom);
+            ImGui::DockBuilderDockWindow("Market", bottom);
+            ImGui::DockBuilderDockWindow("Backtest", right_top);
+            ImGui::DockBuilderDockWindow("Store", right_top);
+            ImGui::DockBuilderDockWindow("Equity", right_bottom);
+            ImGui::DockBuilderFinish(dock_id);
+        }
+    }
+
+    ImGui::DockSpace(dock_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::End();
 
     // Pick up a finished run before anything draws, so every panel in this
     // frame sees the same result.
