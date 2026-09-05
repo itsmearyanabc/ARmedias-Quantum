@@ -17,7 +17,7 @@ optimises for instead.
 |---|---|---|
 | 0 | Toolchain and data foundation | gates met — real data + MT5 spec outstanding |
 | 1 | Backtest engine and cost model | **complete** |
-| 2 | Terminal MVP | partial — see below |
+| 2 | Terminal MVP | code complete — **never run** |
 | 3 | Rule baselines | built — **gate blocked on real data** |
 | 4 | Feature engine and labels | not started |
 | 5 | Meta-labeling model | not started |
@@ -78,8 +78,7 @@ The fill asymmetries that make the model honest, each with a test:
 ### Phase 2 checklist
 
 Built ahead of Phase 1 on request, so the trade-display panels had no engine
-to draw from at the time. That engine now exists; wiring the greyed-out panels
-to it is the next terminal work.
+to draw from at the time. They are wired up now.
 
 - [x] `BarSeries` — time bars from ticks, with closed and forming kept separate
 - [x] ImGui + ImPlot via FetchContent (no vcpkg needed)
@@ -93,9 +92,25 @@ to it is the next terminal work.
 - [x] Store browser — click a month to jump the chart there
 - [x] Log panel
 - [x] Compiles clean under MSVC `/W4 /WX` in CI
-- [ ] **Never actually run** — CI builds it but cannot open a window
-- [ ] Trade markers, equity/drawdown, blotter, backtest runner *(need Phase 1)*
-- [ ] Gate: step through a backtest and inspect every trade *(needs Phase 1)*
+- [x] **Backtest runner** — strategy picker from the shared registry, lots,
+      commission, and 1×/2× cost-stress presets
+- [x] **Trade markers** — entry arrows pointing the way the trade was taken,
+      exit markers, a line between them coloured by outcome, and the selected
+      trade's stop and target drawn across *its own duration* rather than the
+      whole chart
+- [x] **Equity and underwater** — starting balance marked, drawdown beneath on
+      a linked X axis, selected trade marked so blotter, chart and curve agree
+- [x] **Blotter** — clipped table with R multiples, MAE/MFE, exit reason.
+      Rejected orders shown beside the trade count, never hidden.
+- [x] `[` and `]` step through trades, framing each with context either side
+- [x] Runs off the render thread — a decade is seconds of work and freezing the
+      window for it is unforgivable once
+- [ ] **Never actually run.** CI builds it but cannot open a window, and there
+      is no toolchain on this machine. Everything above is unverified by
+      execution.
+
+The gate — *step through a backtest and inspect every individual trade* — is
+implemented but cannot be signed off until someone runs it.
 
 Run it once you have a compiler:
 
