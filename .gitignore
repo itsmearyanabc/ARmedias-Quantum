@@ -43,3 +43,6 @@ CMakeUserPresets.json
 
 # Built extension module, copied next to the tests by CI
 python/xaucore*
+
+# Terminal UI layout - per-user runtime state, not project config
+xauterm.ini
