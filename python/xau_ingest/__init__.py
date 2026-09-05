@@ -8,7 +8,8 @@ docs/PLAN.md section 3 for what belongs on which side of the pybind11 boundary.
                random-walk null used by the leakage tests)
     dukascopy  historical tick fetch and decode
     mt5spec    MT5 symbol spec + server clock offset discovery
+    audit      completeness and sanity checks on a finished store
 """
 
-__all__ = ["tickfmt", "synth", "dukascopy", "mt5spec"]
+__all__ = ["tickfmt", "synth", "dukascopy", "mt5spec", "audit"]
 __version__ = "0.1.0"
