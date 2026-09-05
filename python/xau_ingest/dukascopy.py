@@ -48,9 +48,10 @@ from .tickfmt import (
     TF_ASK,
     TF_BID,
     TickWriter,
-    pack_ticks,
-    verify_store,
     format_report,
+    pack_ticks,
+    read_header,
+    verify_store,
 )
 
 BASE_URL = "https://datafeed.dukascopy.com/datafeed"
@@ -80,6 +81,7 @@ class FetchStats:
     empty: int = 0
     failed: int = 0
     ticks: int = 0
+    skipped_months: int = 0
     failures: list = field(default_factory=list)   # (url, reason) for reporting
 
 
@@ -267,6 +269,24 @@ def hours_of_month(year: int, month: int):
         t += dt.timedelta(hours=1)
 
 
+def month_is_complete(symbol: str, year: int, month: int, out_dir: Path,
+                      cache_dir: Path) -> bool:
+    """True when this month is already fully fetched and written.
+
+    The .bin existing is NOT sufficient. A month written while some hours were
+    failing is a real file with a real hole in it, and skipping on that alone
+    would bake the hole in permanently - every later resume would honour it and
+    the audit would keep reporting a gap nobody ever fills.
+
+    Requiring every hour of the month to be present in the cache is exactly the
+    condition a complete ingest would leave behind, so a month that passes this
+    has nothing left to fetch.
+    """
+    if not (out_dir / f"{symbol}-{year:04d}-{month:02d}.bin").exists():
+        return False
+    return all(cache_path(cache_dir, symbol, h).exists() for h in hours_of_month(year, month))
+
+
 def ingest_month(
     session,
     symbol: str,
@@ -337,6 +357,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=8, help="concurrent requests (be polite)")
     ap.add_argument("--verify", action="store_true", help="verify the store when done")
     ap.add_argument(
+        "--force",
+        action="store_true",
+        help="re-decode months that are already complete instead of skipping them",
+    )
+    ap.add_argument(
         "--max-failure-pct",
         type=float,
         default=2.0,
@@ -372,6 +397,18 @@ def main(argv: list[str] | None = None) -> int:
 
     t0 = time.time()
     for y, m in months:
+        # Re-decoding a finished month costs ~30 s and changes nothing. Over a
+        # decade that is 20+ minutes wasted on every resume, and resumes happen:
+        # a long ingest outlives more than one session.
+        if not args.force and month_is_complete(args.symbol, y, m, out_dir, cache_dir):
+            try:
+                have = read_header(out_dir / f"{args.symbol}-{y:04d}-{m:02d}.bin").count
+            except Exception:
+                have = 0
+            stats.ticks += have
+            stats.skipped_months += 1
+            print(f"  {args.symbol}-{y:04d}-{m:02d}.bin  {have:>12,} ticks   (already complete)")
+            continue
         n = ingest_month(session, args.symbol, y, m, out_dir, cache_dir, args.workers, stats)
         print(f"  {args.symbol}-{y:04d}-{m:02d}.bin  {n:>12,} ticks")
 
@@ -381,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         f"hours: {stats.downloaded:,} downloaded, {stats.from_cache:,} cached, "
         f"{stats.empty:,} empty, {stats.failed:,} failed"
     )
+    print(f"months: {stats.skipped_months:,} already complete and skipped")
     print(f"{stats.ticks * 16 / 1e9:.2f} GB in the store")
 
     if stats.failed:
