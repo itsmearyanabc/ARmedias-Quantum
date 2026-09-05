@@ -43,7 +43,7 @@ optimises for instead.
 - [x] C++ toolchain installed locally — MSVC 19.44 (VS 2022 Build Tools 17.14)
       plus CMake 4.4.3. 54 C++ tests, 11 binding tests and 25 Python tests all
       pass on this machine, not just in CI.
-- [ ] Real tick history ingested and verified
+- [x] Real tick history ingested and verified — 120 months, 445,837,101 ticks, 2015-01-01..2024-12-31, audit verdict OK (no unfetched hours)
 - [ ] `config/symbol_spec.json` generated and committed
 
 ### Phase 1 checklist
