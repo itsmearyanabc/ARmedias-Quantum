@@ -34,9 +34,11 @@ a full 10-year pull is tens of thousands of requests.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import datetime as dt
 import lzma
 import struct
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -108,6 +110,45 @@ def hour_url(symbol: str, when: dt.datetime) -> str:
         f"{BASE_URL}/{symbol}/{when.year:04d}/{when.month - 1:02d}/"
         f"{when.day:02d}/{when.hour:02d}h_ticks.bi5"
     )
+
+
+class KeepAwake:
+    """Hold the machine awake for the length of the pull, and only that long.
+
+    Windows sleeps on *user* idle, not process idle: a download holds no wake
+    lock, so a multi-hour pull on a laptop with a 5-minute standby timer runs
+    in bursts separated by however long it takes someone to touch the keyboard.
+    Measured on this machine, that was a ~10% duty cycle -- six hours of work
+    spread over two and a half days.
+
+    ES_SYSTEM_REQUIRED (without ES_DISPLAY_REQUIRED) keeps the system up while
+    letting the screen go dark, and the flag dies with the process, so a crash
+    cannot leave the machine permanently awake. It does not override a lid
+    close -- that is a hardware policy, not an idle timer.
+    """
+
+    def __enter__(self):
+        self.ok = False
+        if sys.platform == "win32":
+            ES_CONTINUOUS = 0x80000000
+            ES_SYSTEM_REQUIRED = 0x00000001
+            try:
+                prev = ctypes.windll.kernel32.SetThreadExecutionState(
+                    ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+                )
+                self.ok = prev != 0
+            except Exception:
+                self.ok = False
+        return self
+
+    def __exit__(self, *exc):
+        if self.ok:
+            ES_CONTINUOUS = 0x80000000
+            try:
+                ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+            except Exception:
+                pass
+        return False
 
 
 def cache_path(cache_dir: Path, symbol: str, when: dt.datetime) -> Path:
@@ -396,21 +437,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"cache {cache_dir}  ->  store {out_dir}\n")
 
     t0 = time.time()
-    for y, m in months:
-        # Re-decoding a finished month costs ~30 s and changes nothing. Over a
-        # decade that is 20+ minutes wasted on every resume, and resumes happen:
-        # a long ingest outlives more than one session.
-        if not args.force and month_is_complete(args.symbol, y, m, out_dir, cache_dir):
-            try:
-                have = read_header(out_dir / f"{args.symbol}-{y:04d}-{m:02d}.bin").count
-            except Exception:
-                have = 0
-            stats.ticks += have
-            stats.skipped_months += 1
-            print(f"  {args.symbol}-{y:04d}-{m:02d}.bin  {have:>12,} ticks   (already complete)")
-            continue
-        n = ingest_month(session, args.symbol, y, m, out_dir, cache_dir, args.workers, stats)
-        print(f"  {args.symbol}-{y:04d}-{m:02d}.bin  {n:>12,} ticks")
+    # A pull this long outlives the idle timer; see KeepAwake.
+    with KeepAwake() as awake:
+        if not awake.ok and sys.platform == "win32":
+            print("  note: could not hold a wake lock; sleep may interrupt the pull")
+        for y, m in months:
+            # Re-decoding a finished month costs ~30 s and changes nothing. Over a
+            # decade that is 20+ minutes wasted on every resume, and resumes happen:
+            # a long ingest outlives more than one session.
+            if not args.force and month_is_complete(args.symbol, y, m, out_dir, cache_dir):
+                try:
+                    have = read_header(out_dir / f"{args.symbol}-{y:04d}-{m:02d}.bin").count
+                except Exception:
+                    have = 0
+                stats.ticks += have
+                stats.skipped_months += 1
+                print(f"  {args.symbol}-{y:04d}-{m:02d}.bin  {have:>12,} ticks   (already complete)")
+                continue
+            n = ingest_month(session, args.symbol, y, m, out_dir, cache_dir, args.workers, stats)
+            print(f"  {args.symbol}-{y:04d}-{m:02d}.bin  {n:>12,} ticks")
 
     dur = time.time() - t0
     print(
