@@ -13,9 +13,12 @@
 #include "implot.h"
 
 #include <d3d11.h>
+#include <shellapi.h>
 #include <tchar.h>
 
 #include <exception>
+#include <string>
+#include <vector>
 
 // Forward-declared in the backend header's implementation.
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam,
@@ -89,6 +92,33 @@ void destroy_device() {
     if (g_device)    { g_device->Release();    g_device = nullptr; }
 }
 
+// Command-line arguments, as UTF-8.
+//
+// NOT __argv. A WIN32 executable with wWinMain links wWinMainCRTStartup, which
+// populates __wargv and leaves __argv null — so `__argv[1]` is a null
+// dereference, and the crash happens before anything is drawn. It builds and
+// links perfectly, and CI cannot catch it because CI never launches a window.
+std::vector<std::string> command_line_args() {
+    std::vector<std::string> out;
+    int                      wargc = 0;
+    LPWSTR*                  wargv = ::CommandLineToArgvW(::GetCommandLineW(), &wargc);
+    if (wargv == nullptr) return out;
+
+    for (int i = 0; i < wargc; ++i) {
+        const int n =
+            ::WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, nullptr, 0, nullptr, nullptr);
+        if (n > 1) {
+            std::string s(static_cast<std::size_t>(n - 1), '\0');
+            ::WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, s.data(), n, nullptr, nullptr);
+            out.push_back(std::move(s));
+        } else {
+            out.emplace_back();
+        }
+    }
+    ::LocalFree(wargv);
+    return out;
+}
+
 LRESULT WINAPI wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) return true;
 
@@ -151,9 +181,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_device, g_context);
 
-    xauterm::AppState app;
-    if (__argc > 1) app.store_dir = __argv[1];
-    if (__argc > 2) app.symbol = __argv[2];
+    xauterm::AppState              app;
+    const std::vector<std::string> args = command_line_args();
+    if (args.size() > 1) app.store_dir = args[1];
+    if (args.size() > 2) app.symbol = args[2];
     app.log.info("xauterm starting");
     xauterm::open_store(app);
 

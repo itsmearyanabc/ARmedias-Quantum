@@ -64,7 +64,9 @@ add_executable(xauterm WIN32
 )
 
 target_include_directories(xauterm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(xauterm PRIVATE xau::core xau_flags imgui implot)
+# shell32 for CommandLineToArgvW: wWinMainCRTStartup leaves __argv null, so
+# the wide command line has to be parsed explicitly.
+target_link_libraries(xauterm PRIVATE xau::core xau_flags imgui implot shell32)
 
 set_target_properties(xauterm PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
