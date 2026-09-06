@@ -65,17 +65,25 @@ std::string ymd(TimeUs us) {
     return buf;
 }
 
-BacktestConfig base_config() {
+// cost_mult scales everything the broker takes: spread, slippage, commission.
+// At 0 it is a frictionless run, which is the only way to separate "this signal
+// has no edge" from "this signal has an edge that costs eat". Those two look
+// identical in a net-P&L column and call for completely different responses.
+BacktestConfig base_config(Timeframe tf, double cost_mult) {
     BacktestConfig c;
     c.spec = SymbolSpec::xauusd_default();
-    c.tf = Timeframe::M15;
+    c.tf = tf;
     c.initial_balance = 10'000.0;
     // Costs a retail gold account actually sees. Spread always comes from the
     // tick; these are what is added on top.
     c.costs.slip_base_pts = 15.0;
     c.costs.slip_vol_coef = 0.05;
     c.costs.latency_us = 150'000;
-    c.costs.commission_per_lot_round_usd = 7.0;
+    c.costs.commission_per_lot_round_usd = 7.0 * cost_mult;
+    c.costs.spread_mult = cost_mult;
+    c.costs.slippage_mult = cost_mult;
+    // Latency is deliberately NOT scaled. It is not a fee -- it is the market
+    // moving while the order is in flight, and it cuts both ways.
     return c;
 }
 
@@ -87,6 +95,12 @@ int main(int argc, char** argv) {
     int         fold_days = 90;
     double      lots = 0.01;
     bool        require_gate = false;
+    // Hardcoding M15 made the one question this tool exists to answer --
+    // "is the horizon wrong, or the signal?" -- unaskable. Cost per trade is
+    // roughly fixed, so a longer bar has to clear the same spread with a
+    // bigger move. That is a sweep, not a constant.
+    Timeframe   tf = Timeframe::M15;
+    double      cost_mult = 1.0;
 
     int positional = 0;
     for (int i = 1; i < argc; ++i) {
@@ -95,6 +109,22 @@ int main(int argc, char** argv) {
             fold_days = std::atoi(argv[++i]);
         } else if (a == "--lots" && i + 1 < argc) {
             lots = std::atof(argv[++i]);
+        } else if (a == "--tf" && i + 1 < argc) {
+            const std::string want = argv[++i];
+            bool              found = false;
+            for (int k = 0; k < static_cast<int>(Timeframe::COUNT); ++k) {
+                const auto cand = static_cast<Timeframe>(k);
+                if (want == timeframe_name(cand)) {
+                    tf = cand;
+                    found = true;
+                }
+            }
+            if (!found) {
+                std::fprintf(stderr, "unknown timeframe: %s\n", want.c_str());
+                return 2;
+            }
+        } else if (a == "--cost-mult" && i + 1 < argc) {
+            cost_mult = std::atof(argv[++i]);
         } else if (a == "--require-gate") {
             require_gate = true;
         } else if (!a.empty() && a[0] != '-') {
@@ -112,7 +142,8 @@ int main(int argc, char** argv) {
         std::printf("span     %s .. %s   %llu ticks\n", ymd(store.first_ts()).c_str(),
                     ymd(store.last_ts()).c_str(),
                     static_cast<unsigned long long>(store.total_ticks()));
-        std::printf("folds    %d-day walk-forward, non-overlapping\n\n", fold_days);
+        std::printf("folds    %d-day walk-forward, non-overlapping   bars %s\n\n", fold_days,
+                    timeframe_name(tf));
 
         if (synthetic) {
             std::printf(
@@ -133,7 +164,7 @@ int main(int argc, char** argv) {
         wf.test_span_us = static_cast<TimeUs>(fold_days) * kUsPerDay;
         wf.min_trades_per_fold = 1;
 
-        const BacktestConfig cfg = base_config();
+        const BacktestConfig cfg = base_config(tf, cost_mult);
         const BacktestConfig cfg2x = [&] {
             BacktestConfig c = cfg;
             c.costs = c.costs.stressed(2.0);
