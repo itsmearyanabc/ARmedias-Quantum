@@ -12,6 +12,7 @@ add_library(xaucore STATIC
     src/zoo.cpp
     src/regime.cpp
     src/validation.cpp
+    src/risk.cpp
 )
 
 add_library(xau::core ALIAS xaucore)
