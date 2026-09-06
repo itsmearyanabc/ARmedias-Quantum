@@ -130,6 +130,33 @@ const std::vector<BaselineEntry>& entries() {
              c.lots = lots;
              return std::make_unique<AdaptiveTrend>(c);
          }},
+        {"Rsi2InRange",
+         "RSI-2 extremes, but only where a mean-reversion bet has a reason to "
+         "work: ranging markets and high-volatility overshoots. It sits out "
+         "normal trends, which is 41% of the decade and where it bleeds worst.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             Rsi2Extreme::Config c;
+             c.lots = lots;
+             return std::make_unique<RegimeGated>(
+                 std::make_unique<Rsi2Extreme>(c),
+                 RegimeGated::mask_of({0, 2, 4, 5}),   // ranges + wild/trend
+                 "Rsi2InRange");
+         }},
+        {"Rsi2RangesOnly",
+         "The honesty check on Rsi2InRange. Mean reversion only in RANGING "
+         "markets -- a rule stated from theory, with no cell chosen by looking "
+         "at the table. If this holds up, the effect is real; if only the "
+         "hand-picked version works, the hand-picking was the effect.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             Rsi2Extreme::Config c;
+             c.lots = lots;
+             return std::make_unique<RegimeGated>(
+                 std::make_unique<Rsi2Extreme>(c),
+                 RegimeGated::mask_of({0, 2, 4}),   // ranging only, a priori
+                 "Rsi2RangesOnly");
+         }},
     };
     return v;
 }

@@ -2,6 +2,8 @@
 
 #include "xau/session.hpp"
 
+#include <utility>
+
 #include <algorithm>
 #include <cmath>
 
@@ -369,6 +371,33 @@ Decision AdaptiveTrend::on_bar(const BarContext& c) {
     if (crossed_up) return entry(Side::Long, sl, tp, cfg_.lots, "trend_up");
     if (crossed_dn) return entry(Side::Short, sl, tp, cfg_.lots, "trend_dn");
     return Decision::hold();
+}
+
+// ---------------------------------------------------------------------------
+// 13. Regime-gated wrapper
+// ---------------------------------------------------------------------------
+RegimeGated::RegimeGated(std::unique_ptr<Strategy> inner, unsigned allowed_mask,
+                         const char* label)
+    : inner_(std::move(inner)), allowed_(allowed_mask), label_(label) {}
+
+std::size_t RegimeGated::warmup_bars() const noexcept {
+    // The regime classifier needs its own history, and it is the longer of the
+    // two requirements -- gating on a regime computed from eight bars would be
+    // gating on noise.
+    const RegimeConfig rc{};
+    return std::max(inner_->warmup_bars(), rc.vol_lookback + rc.atr_period + 2);
+}
+
+Decision RegimeGated::on_bar(const BarContext& c) {
+    // The inner strategy sees EVERY bar regardless of the gate. Its indicators
+    // are stateful; feeding it only the bars we like would desynchronise every
+    // EMA and ATR it owns and quietly change what it computes.
+    Decision d = inner_->on_bar(c);
+    if (d.kind != Decision::Kind::Enter) return d;
+
+    const Regime r = classify(c.history);
+    if ((allowed_ & (1u << r.index())) == 0u) return Decision::hold();
+    return d;
 }
 
 }  // namespace xau

@@ -19,9 +19,13 @@
 
 #include "xau/indicators.hpp"
 #include "xau/rules.hpp"
+#include "xau/regime.hpp"
 #include "xau/strategy.hpp"
 
 #include <cstddef>
+#include <initializer_list>
+#include <memory>
+#include <string>
 
 namespace xau {
 
@@ -296,6 +300,43 @@ private:
     Ema    slow_;
     bool   was_above_ = false;
     bool   primed_ = false;
+};
+
+// ---------------------------------------------------------------------------
+// 13. Regime-gated wrapper
+//
+// Wraps any strategy and suppresses its entries outside a chosen set of
+// regimes. Exits are never suppressed -- a position opened in one regime must
+// still be allowed to close when the market changes underneath it, or the
+// gate would strand trades it opened.
+//
+// The regime set is a decision about WHEN a hypothesis applies, and should be
+// justified by the hypothesis rather than by the backtest. Mean reversion
+// losing in trends is theory; picking the six best-looking cells out of a
+// table of seventy-two is curve fitting that will not survive contact with
+// next year.
+// ---------------------------------------------------------------------------
+class RegimeGated final : public Strategy {
+public:
+    RegimeGated(std::unique_ptr<Strategy> inner, unsigned allowed_mask, const char* label);
+
+    [[nodiscard]] const char* name() const noexcept override { return label_.c_str(); }
+    [[nodiscard]] std::size_t warmup_bars() const noexcept override;
+    [[nodiscard]] Decision on_bar(const BarContext& c) override;
+    void on_trade_closed(const Trade& t) override { inner_->on_trade_closed(t); }
+    void on_finish() override { inner_->on_finish(); }
+
+    // Bit k is set when regime index k is tradeable.
+    static constexpr unsigned mask_of(std::initializer_list<std::size_t> idx) noexcept {
+        unsigned m = 0;
+        for (std::size_t i : idx) m |= (1u << i);
+        return m;
+    }
+
+private:
+    std::unique_ptr<Strategy> inner_;
+    unsigned                  allowed_ = ~0u;
+    std::string               label_;
 };
 
 }  // namespace xau
