@@ -76,9 +76,9 @@ std::string ymd(TimeUs us) {
 // At 0 it is a frictionless run, which is the only way to separate "this signal
 // has no edge" from "this signal has an edge that costs eat". Those two look
 // identical in a net-P&L column and call for completely different responses.
-BacktestConfig base_config(Timeframe tf, double cost_mult) {
+BacktestConfig base_config(Timeframe tf, double cost_mult, const std::string& symbol) {
     BacktestConfig c;
-    c.spec = SymbolSpec::xauusd_default();
+    c.spec = SymbolSpec::for_symbol(symbol);
     c.tf = tf;
     c.initial_balance = 10'000.0;
     // Costs a retail gold account actually sees. Spread always comes from the
@@ -171,7 +171,7 @@ int main(int argc, char** argv) {
         wf.test_span_us = static_cast<TimeUs>(fold_days) * kUsPerDay;
         wf.min_trades_per_fold = 1;
 
-        const BacktestConfig cfg = base_config(tf, cost_mult);
+        const BacktestConfig cfg = base_config(tf, cost_mult, symbol);
         const BacktestConfig cfg2x = [&] {
             BacktestConfig c = cfg;
             c.costs = c.costs.stressed(2.0);

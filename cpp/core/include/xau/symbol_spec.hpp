@@ -81,6 +81,38 @@ struct SymbolSpec {
     }
 
     static SymbolSpec xauusd_default() { return SymbolSpec{}; }
+
+    // Silver, for testing whether a hypothesis generalises beyond the one
+    // instrument it was found on.
+    //
+    // Silver is NOT independent evidence -- it correlates with gold around 0.8,
+    // so its bars do not add sample the way a bar count suggests. What it does
+    // give is a test the gold data cannot: a rule discovered on gold either
+    // describes a mechanism, in which case it should survive on a related
+    // metal, or it describes gold's particular decade, in which case it will
+    // not. That distinction is worth more here than more of the same series.
+    //
+    // Contract is 5,000 oz on MT5 and the quote runs to three decimals rather
+    // than two, so a "point" is a different fraction of price than in gold --
+    // getting either wrong silently rescales every P&L figure.
+    static SymbolSpec xagusd_default() {
+        SymbolSpec s;
+        s.name = "XAGUSD";
+        s.point_num = 1;
+        s.point_den = 1000;      // 1 pt = 0.001 USD, as for gold
+        s.contract_size = 5000.0;
+        s.volume_min = 0.01;
+        s.volume_max = 100.0;
+        s.volume_step = 0.01;
+        return s;
+    }
+
+    // Look a spec up by the symbol name a store carries, so tools do not have
+    // to hardcode which metal they are being pointed at.
+    static SymbolSpec for_symbol(const std::string& sym) {
+        if (sym == "XAGUSD") return xagusd_default();
+        return xauusd_default();
+    }
 };
 
 }  // namespace xau

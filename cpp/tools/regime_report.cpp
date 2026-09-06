@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
         std::printf("\n");
 
         BacktestConfig cfg;
-        cfg.spec = SymbolSpec::xauusd_default();
+        cfg.spec = SymbolSpec::for_symbol(symbol);
         cfg.tf = tf;
         cfg.initial_balance = 10'000.0;
         cfg.costs.slip_base_pts = 15.0;
