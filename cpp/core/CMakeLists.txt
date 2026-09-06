@@ -9,6 +9,7 @@ add_library(xaucore STATIC
     src/registry.cpp
     src/features.cpp
     src/labels.cpp
+    src/zoo.cpp
 )
 
 add_library(xau::core ALIAS xaucore)

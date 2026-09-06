@@ -36,6 +36,13 @@ namespace {
 
 constexpr double kGatePf = 1.05;
 
+// A profit factor computed on a handful of trades is not evidence. Without
+// this floor the H4 sweep "passed" on a strategy with ELEVEN trades across ten
+// years, at PF 1.66 -- a number with an error bar wider than the claim. The
+// plan's own Phase 8 gate demands at least 40 trades before a live result
+// counts; a backtest gate has no business being more permissive than that.
+constexpr int kGateMinTrades = 100;
+
 // Samples tick flags. The synthetic generator stamps TF_SYNTHETIC on every
 // tick it writes, which is the only reliable way to tell a store apart from
 // real history after the fact.
@@ -193,8 +200,9 @@ int main(int argc, char** argv) {
                         r1.frac_folds_profitable * 100.0, r2.pooled.profit_factor,
                         r2.pooled.net_profit);
 
-            best_pf_2x = std::max(best_pf_2x, r2.pooled.profit_factor);
-            if (r2.pooled.profit_factor > kGatePf && r2.pooled.trades > 0) gate_pass = true;
+            const bool enough = r2.pooled.trades >= kGateMinTrades;
+            if (enough) best_pf_2x = std::max(best_pf_2x, r2.pooled.profit_factor);
+            if (enough && r2.pooled.profit_factor > kGatePf) gate_pass = true;
         }
 
         std::printf("\ngate     PF > %.2f after 2x costs : %s (best %.3f)\n", kGatePf,

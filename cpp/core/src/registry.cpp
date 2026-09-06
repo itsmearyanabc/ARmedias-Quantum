@@ -2,6 +2,7 @@
 
 #include "xau/baselines.hpp"
 #include "xau/rules.hpp"
+#include "xau/zoo.hpp"
 
 #include <cstring>
 #include <vector>
@@ -64,6 +65,70 @@ const std::vector<BaselineEntry>& entries() {
          false,
          [](double lots) -> std::unique_ptr<Strategy> {
              return std::make_unique<BuyAndHold>(lots, Side::Long);
+         }},
+        {"BollingerReversion",
+         "Fade a stretch beyond 2 SD back toward the mean. The opposite bet to every breakout rule here, which is why it earns a slot.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             BollingerReversion::Config c;
+             c.lots = lots;
+             return std::make_unique<BollingerReversion>(c);
+         }},
+        {"Rsi2Extreme",
+         "Connors RSI-2 below 5 or above 95. Keys on the run of closes rather than the distance travelled.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             Rsi2Extreme::Config c;
+             c.lots = lots;
+             return std::make_unique<Rsi2Extreme>(c);
+         }},
+        {"MomentumContinuation",
+         "Buy strength, sell weakness. The null that any claim of trend on gold has to beat.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             MomentumContinuation::Config c;
+             c.lots = lots;
+             return std::make_unique<MomentumContinuation>(c);
+         }},
+        {"SessionDrift",
+         "Direction of the first bars after the NY open, held into the session. No indicator: pure time of day.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             SessionDrift::Config c;
+             c.lots = lots;
+             return std::make_unique<SessionDrift>(c);
+         }},
+        {"LiquidityFade",
+         "A spread spike with no range expansion is liquidity leaving, not news arriving. Reads the book, not the chart.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             LiquidityFade::Config c;
+             c.lots = lots;
+             return std::make_unique<LiquidityFade>(c);
+         }},
+        {"InsideBarBreak",
+         "Break of the mother bar after a one-bar compression. Setups age out in three bars.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             InsideBarBreak::Config c;
+             c.lots = lots;
+             return std::make_unique<InsideBarBreak>(c);
+         }},
+        {"WeekendGapFade",
+         "Gold gaps over the weekend and usually fills. Fires once a week at most, so it is reported on thin data.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             WeekendGapFade::Config c;
+             c.lots = lots;
+             return std::make_unique<WeekendGapFade>(c);
+         }},
+        {"AdaptiveTrend",
+         "EMA cross gated on expanding volatility, so it sits out the chop that bleeds most trend systems.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             AdaptiveTrend::Config c;
+             c.lots = lots;
+             return std::make_unique<AdaptiveTrend>(c);
          }},
     };
     return v;
