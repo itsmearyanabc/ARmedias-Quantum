@@ -46,3 +46,4 @@ python/xaucore*
 
 # Terminal UI layout - per-user runtime state, not project config
 xauterm.ini
+data/datasets/

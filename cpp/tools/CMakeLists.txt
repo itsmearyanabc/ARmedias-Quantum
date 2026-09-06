@@ -2,3 +2,6 @@
 # store, and their exit codes reflect operational failure rather than verdicts.
 add_executable(run_baselines run_baselines.cpp)
 target_link_libraries(run_baselines PRIVATE xau::core xau_flags)
+
+add_executable(build_dataset build_dataset.cpp)
+target_link_libraries(build_dataset PRIVATE xau::core xau_flags)
