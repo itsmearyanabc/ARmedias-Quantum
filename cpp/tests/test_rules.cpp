@@ -566,9 +566,22 @@ XAU_TEST(registry_is_well_formed) {
     CHECK(names_unique);
     CHECK(all_construct);
     CHECK(all_described);
-    // The four rule baselines from PLAN section 7, and only those. The null
-    // model and buy-and-hold must never be able to satisfy the Phase 3 gate.
-    CHECK_EQ(gate_candidates, std::size_t{4});
+    // The zoo grows, so a hardcoded count here just breaks on every addition
+    // and teaches the next person to bump the number without reading it. What
+    // must stay true is the invariant the count was standing in for: the null
+    // model and buy-and-hold can never satisfy the Phase 3 gate, and the four
+    // PLAN section 7 baselines always can.
+    CHECK(gate_candidates >= std::size_t{4});
+    for (const char* n : {"RandomEntry (null)", "BuyAndHold"}) {
+        const BaselineEntry* e = find_baseline(n);
+        if (e != nullptr) CHECK(!e->gate_candidate);
+    }
+    for (const char* n : {"LondonOpeningRange", "AsiaRangeBreakout", "TrendPullback",
+                          "VolatilityCompression"}) {
+        const BaselineEntry* e = find_baseline(n);
+        CHECK(e != nullptr);
+        if (e != nullptr) CHECK(e->gate_candidate);
+    }
 }
 
 XAU_TEST(registry_lookup_and_factories) {

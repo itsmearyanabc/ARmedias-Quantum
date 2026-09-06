@@ -5,6 +5,7 @@ add_executable(xau_tests
     test_engine.cpp
     test_rules.cpp
     test_leakage.cpp
+    test_validation.cpp
 )
 
 target_include_directories(xau_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

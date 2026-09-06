@@ -8,3 +8,6 @@ target_link_libraries(build_dataset PRIVATE xau::core xau_flags)
 
 add_executable(regime_report regime_report.cpp)
 target_link_libraries(regime_report PRIVATE xau::core xau_flags)
+
+add_executable(validate validate.cpp)
+target_link_libraries(validate PRIVATE xau::core xau_flags)
