@@ -47,7 +47,19 @@ HOUR_US = 3_600_000_000
 # Gold's actual yearly range, for a decode sanity check. Deliberately loose:
 # this is here to catch a wrong point scale (which would be off by 100x), not
 # to second-guess the market.
-PLAUSIBLE_YEAR_USD = (900.0, 5_000.0)
+# Per-symbol plausible price bands. A single gold-shaped band flagged correct
+# silver data as a decode error -- silver traded 16-18 USD in 2015, which is
+# exactly right and nowhere near gold's floor of 900. A check that cries wolf
+# on good data gets ignored on bad data, which is the failure that matters.
+PLAUSIBLE_YEAR_USD = (900.0, 5_000.0)          # XAUUSD, kept for compatibility
+PLAUSIBLE_BY_SYMBOL = {
+    "XAUUSD": (900.0, 5_000.0),
+    "XAGUSD": (5.0, 100.0),
+}
+
+
+def plausible_band(symbol: str):
+    return PLAUSIBLE_BY_SYMBOL.get(symbol.upper(), (0.0, float("inf")))
 
 
 def session_of(hour: int) -> str:
@@ -129,6 +141,7 @@ class YearStats:
 
 @dataclass
 class AuditReport:
+    symbol: str = "XAUUSD"
     files: int = 0
     ticks: int = 0
     synthetic_ticks: int = 0
@@ -147,7 +160,7 @@ class AuditReport:
 
 def audit_store(directory, symbol: str, min_open_hours: int = 2,
                 cache_dir: Path | None = None) -> AuditReport:
-    rep = AuditReport()
+    rep = AuditReport(symbol=symbol)
     paths = store_files(directory, symbol)
     if not paths:
         raise FileNotFoundError(f"no {symbol}-YYYY-MM.bin files in {directory}")
@@ -306,7 +319,8 @@ def format_report(rep: AuditReport, expected_months: int = 0) -> str:
         ov_rg = np.median(s.sess_range["overlap"]) if s.sess_range["overlap"] else float("nan")
         ratio = (ov_sp / ov_rg * 100.0) if ov_rg and ov_rg == ov_rg and ov_rg > 0 else float("nan")
         flag = ""
-        if not (PLAUSIBLE_YEAR_USD[0] <= s.min_px <= PLAUSIBLE_YEAR_USD[1]):
+        lo_ok, hi_ok = plausible_band(rep.symbol)
+        if not (lo_ok <= s.min_px <= hi_ok):
             flag = "  <-- implausible, check the decode scale"
         out.append(
             f"  {y:<6}{s.ticks:>14,}{s.min_px:>11,.0f} ..{s.max_px:>8,.0f}"
