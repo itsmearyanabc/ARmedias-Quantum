@@ -256,6 +256,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     app.tf = opt.tf;
     app.lots = opt.lots;
 
+    bool strategy_found = opt.strategy.empty();
     if (!opt.strategy.empty()) {
         // Prefix match, case-insensitively: one registry entry is called
         // "RandomEntry (null)", which is awkward to type on a command line.
@@ -263,12 +264,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
         for (int i = 0; i < static_cast<int>(reg.size()); ++i) {
             if (starts_with_ci(reg[static_cast<std::size_t>(i)].name, opt.strategy)) {
                 app.strategy_index = i;
+                strategy_found = true;
                 break;
             }
         }
     }
 
     app.log.info("xauterm starting");
+    if (!strategy_found) {
+        // Falling back silently is how a stale binary ran LondonOpeningRange
+        // for a whole session while the command line clearly said otherwise.
+        // A name that does not resolve is a mistake worth seeing, not a
+        // default worth taking -- especially once this drives real orders.
+        app.log.warn("no strategy matches '" + opt.strategy + "'; using " +
+                     std::string(xau::baseline_registry()[
+                         static_cast<std::size_t>(app.strategy_index)].name));
+    }
     xauterm::open_store(app);
     if (opt.run) xauterm::start_backtest(app);
 
