@@ -68,6 +68,22 @@ MAX_SPREAD_PTS = 0xFFFF
 PLAUSIBLE_MIN_PTS = 200 * XAUUSD_POINT_DEN
 PLAUSIBLE_MAX_PTS = 20_000 * XAUUSD_POINT_DEN
 
+# Per-symbol plausibility, because one band cannot cover two metals. Silver
+# trades 11-35 USD and gold 1,000-2,800; a gold-shaped floor of 200 marks every
+# silver tick ever recorded as out of range and fails a store that is perfectly
+# correct. A verifier that fails on good data trains you to ignore it, which is
+# the state you do not want to be in when it finally fails on bad data.
+PLAUSIBLE_PTS_BY_SYMBOL = {
+    "XAUUSD": (200 * XAUUSD_POINT_DEN, 20_000 * XAUUSD_POINT_DEN),
+    "XAGUSD": (1 * XAUUSD_POINT_DEN, 500 * XAUUSD_POINT_DEN),
+}
+
+
+def plausible_pts(symbol: str) -> tuple[int, int]:
+    return PLAUSIBLE_PTS_BY_SYMBOL.get(
+        symbol.upper(), (PLAUSIBLE_MIN_PTS, PLAUSIBLE_MAX_PTS)
+    )
+
 assert TICK_DTYPE.itemsize == 16, "Tick must be 16 bytes to match the C++ struct"
 assert HEADER_BYTES == 64, "FileHeader must be 64 bytes to match the C++ struct"
 assert TICK_DTYPE.fields is not None
@@ -347,8 +363,8 @@ def verify_store(
     directory: str | Path,
     symbol: str,
     gap_threshold_us: int = 60_000_000,
-    min_pts: int = PLAUSIBLE_MIN_PTS,
-    max_pts: int = PLAUSIBLE_MAX_PTS,
+    min_pts: int | None = None,
+    max_pts: int | None = None,
 ) -> VerifyReport:
     """Walk every tick, checking order, plausibility and gaps.
 
@@ -356,6 +372,15 @@ def verify_store(
     side. Weekend closes are real gaps, so a weekday-sized threshold will
     always report ~1 gap per week — that is expected, not a failure.
     """
+    # Resolved from the symbol rather than defaulted to gold's band, so a
+    # caller that says nothing gets the right answer instead of a confident
+    # wrong one.
+    band_lo, band_hi = plausible_pts(symbol)
+    if min_pts is None:
+        min_pts = band_lo
+    if max_pts is None:
+        max_pts = band_hi
+
     rep = VerifyReport()
     paths = store_files(directory, symbol)
     if not paths:
