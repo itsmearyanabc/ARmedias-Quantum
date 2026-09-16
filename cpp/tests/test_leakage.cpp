@@ -47,7 +47,10 @@ std::vector<Bar> random_walk_bars(std::size_t n, std::uint64_t seed) {
         b.high = static_cast<Points>(hi);
         b.low = static_cast<Points>(lo);
         b.close = static_cast<Points>(c);
-        b.ticks = 500 + (i % 100);
+        // i is size_t and ticks is uint32_t. The value never exceeds 599, but
+        // GCC's -Wconversion judges the types rather than the range, and this
+        // one line is what turned CI red at Phase 4.
+        b.ticks = static_cast<std::uint32_t>(500 + (i % 100));
         b.spread_mean_pts = 330;
         b.spread_max_pts = 400;
         bars.push_back(b);
