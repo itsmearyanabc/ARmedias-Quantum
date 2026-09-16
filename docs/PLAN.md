@@ -4,7 +4,7 @@
 **Horizon:** Intraday, M15–H1 entries, flat overnight and over weekends
 **Account context:** Prop firm challenge (FTMO-style rules)
 **Implementation:** C++20 core + Dear ImGui/ImPlot terminal, Python for data ingest and model training
-**Status:** Phases 0-7 built. Phase 3 gate cleared by one candidate on gold D1; Phase 5 and Phase 6 gates **FAIL on both gold and silver** — no validated edge. See [RESULTS](RESULTS.md) for every measured number. Green on MSVC and GCC in CI.
+**Status:** Phases 0-7 built. Phase 3 gate cleared by one candidate on gold D1; Phase 5 and Phase 6 gates **FAIL on both gold and silver** — no validated edge. See [RESULTS](RESULTS.md) for every measured number. CI green on MSVC, GCC and Python as of `ed9de42`, verified from the check runs — after being red on GCC from Phase 4 to then, unnoticed.
 
 ---
 
