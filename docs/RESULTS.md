@@ -50,6 +50,35 @@ PBO asks whether selecting the in-sample winner picks badly, and it does not.
 DSR asks whether the winner beats luck, and it does not. Consistently selecting
 something that is not there passes the first test and fails the second.
 
+## CPCV — the distribution behind the single number
+
+126 distinct out-of-sample paths from 252 combinations of 5-of-10 blocks.
+Fraction of paths with a positive Sharpe:
+
+| strategy | gold | silver |
+|---|---|---|
+| RandomEntry (null) | 8% | 0% |
+| Rsi2Extreme (ungated) | 25% | 2% |
+| InsideBarBreak | 49% | 0% |
+| **Rsi2InRange** | **76%** | **38%** |
+| Rsi2RangesOnly | 62% | 17% |
+
+This is the most informative view produced so far, and it separates two things
+the DSR conflates. CONSISTENCY: on gold the gated strategy is positive in 76%
+of resamplings against the null's 8%, and the gate lifts its own ungated parent
+from 25% to 76% — that ordering is stable and is not what noise looks like.
+MAGNITUDE: the median Sharpe is 0.0433 per trade, which is small enough that
+70 trials of searching can produce it by luck, which is exactly what the DSR
+of 0.045 says.
+
+Both readings are correct. The effect is real in the sense that it reproduces
+across resamplings and across the gate/no-gate comparison; it is not
+established in the sense that it beats the search that found it.
+
+Silver ranks the same strategies in the same order — Rsi2InRange first at 38%,
+its ungated parent at 2%, the null at 0% — while every absolute number is worse.
+Same ordering, thinner margin, consistent with costs rather than with absence.
+
 ## The measurement that corrects the optimistic reading
 
 Walk-forward reports Rsi2InRange on silver at PF 1.033 over 101 trades. The

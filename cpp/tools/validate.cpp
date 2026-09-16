@@ -85,7 +85,8 @@ int main(int argc, char** argv) {
         struct Row {
             std::string         name;
             std::vector<double> per_block;    // net USD in each block
-            std::vector<double> trade_rets;   // per-trade net, for moments
+            std::vector<double> trade_rets;   // per-trade net, IN BLOCK ORDER
+            std::vector<std::size_t> block_trade_count;   // how many fell in each
             double              sharpe = 0.0;
             int                 trades = 0;
             double              net = 0.0;
@@ -100,13 +101,24 @@ int main(int argc, char** argv) {
             Row r;
             r.name = b.name;
             r.per_block.assign(blocks, 0.0);
+            r.block_trade_count.assign(blocks, 0);
             r.trades = static_cast<int>(br.trades.size());
+
+            // Bucket first, then flatten in block order, so trade_rets and
+            // block_trade_count index the same way. Pushing in chronological
+            // order and indexing by block would silently misalign the two
+            // whenever a block contained no trades.
+            std::vector<std::vector<double>> by_block(blocks);
             for (const Trade& t : br.trades) {
                 auto k = static_cast<std::size_t>((t.entry_ts - t0) / (span > 0 ? span : 1));
                 if (k >= blocks) k = blocks - 1;
                 r.per_block[k] += t.net_usd;
-                r.trade_rets.push_back(t.net_usd);
+                by_block[k].push_back(t.net_usd);
                 r.net += t.net_usd;
+            }
+            for (std::size_t bi = 0; bi < blocks; ++bi) {
+                r.block_trade_count[bi] = by_block[bi].size();
+                for (double v : by_block[bi]) r.trade_rets.push_back(v);
             }
             r.sharpe = sharpe_ratio(r.trade_rets);
             rows.push_back(std::move(r));
@@ -170,6 +182,72 @@ int main(int argc, char** argv) {
             std::sort(v.begin(), v.end());
             std::printf("  OOS of winner  median %+.2f USD   worst %+.2f   best %+.2f\n",
                         v[v.size() / 2], v.front(), v.back());
+        }
+
+        // --- CPCV: a distribution, not a number -------------------------------
+        //
+        // One backtest path is one sample, and a Sharpe computed from one sample
+        // is a point estimate reported as if it were a fact. Combinatorial
+        // purged CV resamples the same history into every way of choosing half
+        // the blocks as out-of-sample, which turns that single number into a
+        // spread -- and the spread is what says whether the number is stable or
+        // whether it happened to land well.
+        //
+        // The blocks are contiguous in time and the trades inside them are used
+        // whole, so a trade never straddles the boundary between a train block
+        // and a test block.
+        {
+            const std::size_t k = blocks / 2;
+            const auto        combos = cpcv_test_combinations(blocks, k);
+            std::printf("\nCPCV over %zu combinations of %zu/%zu blocks (%zu distinct paths)\n",
+                        combos.size(), k, blocks, cpcv_path_count(blocks, k));
+
+            std::printf("%-22s %9s %9s %9s %9s\n", "strategy", "medSR", "p05", "p95",
+                        "SR>0");
+            std::printf("%s\n", std::string(62, '-').c_str());
+
+            for (const Row& r : rows) {
+                // Which block each trade fell in, recomputed per strategy.
+                std::vector<double> path_sr;
+                path_sr.reserve(combos.size());
+
+                for (const auto& test_groups : combos) {
+                    std::vector<double> sample;
+                    std::size_t         ti = 0;
+                    for (std::size_t bidx = 0; bidx < blocks; ++bidx) {
+                        const bool is_test =
+                            std::find(test_groups.begin(), test_groups.end(), bidx) !=
+                            test_groups.end();
+                        const std::size_t n_in_block = r.block_trade_count[bidx];
+                        if (is_test) {
+                            for (std::size_t j = 0; j < n_in_block; ++j) {
+                                sample.push_back(r.trade_rets[ti + j]);
+                            }
+                        }
+                        ti += n_in_block;
+                    }
+                    if (sample.size() >= 10) path_sr.push_back(sharpe_ratio(sample));
+                }
+
+                if (path_sr.size() < 10) {
+                    std::printf("%-22s %9s %9s %9s %9s\n", r.name.c_str(), "-", "-", "-", "-");
+                    continue;
+                }
+                std::sort(path_sr.begin(), path_sr.end());
+                const double med = path_sr[path_sr.size() / 2];
+                const double p05 = path_sr[static_cast<std::size_t>(path_sr.size() * 0.05)];
+                const double p95 = path_sr[static_cast<std::size_t>(path_sr.size() * 0.95)];
+                const std::size_t pos =
+                    static_cast<std::size_t>(std::count_if(path_sr.begin(), path_sr.end(),
+                                                           [](double x) { return x > 0.0; }));
+                std::printf("%-22s %9.4f %9.4f %9.4f %8.0f%%\n", r.name.c_str(), med, p05, p95,
+                            100.0 * static_cast<double>(pos) /
+                                static_cast<double>(path_sr.size()));
+            }
+            std::printf("\nA strategy whose p05 is deeply negative while its median is barely\n"
+                        "positive is not a strategy with a small edge. It is a coin flip whose\n"
+                        "average happens to be up, and the single-number Sharpe above hides\n"
+                        "exactly that.\n");
         }
 
         // --- gate ------------------------------------------------------------
