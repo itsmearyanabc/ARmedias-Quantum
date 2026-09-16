@@ -235,8 +235,13 @@ int main(int argc, char** argv) {
                 }
                 std::sort(path_sr.begin(), path_sr.end());
                 const double med = path_sr[path_sr.size() / 2];
-                const double p05 = path_sr[static_cast<std::size_t>(path_sr.size() * 0.05)];
-                const double p95 = path_sr[static_cast<std::size_t>(path_sr.size() * 0.95)];
+                // The cast has to wrap the size BEFORE the multiply. Casting the
+                // result is too late: size() * 0.05 has already converted the
+                // size to double implicitly, which GCC's -Wconversion rejects
+                // and MSVC's /W4 lets through -- so it built here and broke CI.
+                const auto   n_paths = static_cast<double>(path_sr.size());
+                const double p05 = path_sr[static_cast<std::size_t>(n_paths * 0.05)];
+                const double p95 = path_sr[static_cast<std::size_t>(n_paths * 0.95)];
                 const std::size_t pos =
                     static_cast<std::size_t>(std::count_if(path_sr.begin(), path_sr.end(),
                                                            [](double x) { return x > 0.0; }));

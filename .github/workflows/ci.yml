@@ -49,16 +49,27 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if cmake --build --preset ${{ matrix.preset }} 2>&1 | tee build.log; then
+          # -k 0: keep compiling after a failure. Ninja's default stops at the
+          # first broken translation unit, which HIDES every other error behind
+          # it -- and that is how fourteen commits stacked up on a red build,
+          # each fix only ever revealing the next file along.
+          if cmake --build --preset ${{ matrix.preset }} -- -k 0 2>&1 | tee build.log; then
             exit 0
           fi
-          echo "----- build failed; first errors -----"
-          grep -aiE "error( C[0-9]+)?:|fatal error|undefined reference|unresolved external" build.log \
-            | head -12 \
-            | while IFS= read -r line; do
-                clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
-                echo "::error::${clean}"
-              done
+          errs=$(grep -aiE "error( C[0-9]+)?:|fatal error|undefined reference|unresolved external" build.log | tr -d '\r')
+          total=$(printf '%s\n' "$errs" | grep -c . || true)
+          files=$(printf '%s\n' "$errs" | grep -aoE '[A-Za-z0-9_./-]+\.(cpp|hpp|h)' | sort -u)
+          nfiles=$(printf '%s\n' "$files" | grep -c . || true)
+          echo "::notice::build failed: ${total} errors across ${nfiles} files"
+          # One annotation per FILE, not the first N errors. GitHub keeps ~10
+          # error annotations per step; spending them all on one file would
+          # leave the rest of the breakage invisible from the public API.
+          printf '%s\n' "$files" | head -10 | while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            line=$(printf '%s\n' "$errs" | grep -aF "$f" | head -1)
+            clean=$(printf '%s' "$line" | sed 's/%/%25/g')
+            echo "::error::${clean}"
+          done
           exit 1
 
       - name: Unit tests
