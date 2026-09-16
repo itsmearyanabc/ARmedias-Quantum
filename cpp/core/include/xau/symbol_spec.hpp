@@ -107,10 +107,34 @@ struct SymbolSpec {
         return s;
     }
 
+    // EURUSD, the replication test with a cost structure that does not swamp
+    // the signal.
+    //
+    // Stored at 1/100000, not gold's 1/1000. At gold's scale a 0.00010 spread
+    // is 0.1 of a point and rounds to zero, and prices quantise to ten pips on
+    // an instrument that moves in tenths of one -- a store that looks valid and
+    // contains no microstructure at all.
+    //
+    // A standard lot is 100,000 units of base currency, so one point (0.00001)
+    // on one lot is 1.00 USD: 100,000 x 1/100000. That figure is what every P&L
+    // number downstream is built on, which is why it is pinned by a test.
+    static SymbolSpec eurusd_default() {
+        SymbolSpec s;
+        s.name = "EURUSD";
+        s.point_num = 1;
+        s.point_den = 100000;
+        s.contract_size = 100000.0;
+        s.volume_min = 0.01;
+        s.volume_max = 100.0;
+        s.volume_step = 0.01;
+        return s;
+    }
+
     // Look a spec up by the symbol name a store carries, so tools do not have
-    // to hardcode which metal they are being pointed at.
+    // to hardcode which instrument they are being pointed at.
     static SymbolSpec for_symbol(const std::string& sym) {
         if (sym == "XAGUSD") return xagusd_default();
+        if (sym == "EURUSD") return eurusd_default();
         return xauusd_default();
     }
 };

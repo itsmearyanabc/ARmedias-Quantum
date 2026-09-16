@@ -76,6 +76,11 @@ PLAUSIBLE_MAX_PTS = 20_000 * XAUUSD_POINT_DEN
 PLAUSIBLE_PTS_BY_SYMBOL = {
     "XAUUSD": (200 * XAUUSD_POINT_DEN, 20_000 * XAUUSD_POINT_DEN),
     "XAGUSD": (1 * XAUUSD_POINT_DEN, 500 * XAUUSD_POINT_DEN),
+    # FX is stored at 1/100000, so its band is expressed at that scale too. A
+    # band written in gold's points would put EURUSD's 1.1 at 1,100 and reject
+    # every tick against a floor calibrated for a different denominator.
+    "EURUSD": (50_000, 200_000),
+    "GBPUSD": (80_000, 250_000),
 }
 
 

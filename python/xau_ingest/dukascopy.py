@@ -69,10 +69,40 @@ POINT_SCALE = {
     "USDJPY": 1000,
 }
 
-# Our storage scale, from tickfmt: 1 point = 0.001 USD.
-STORE_SCALE = 1000
+# Storage scale, per symbol: how many storage points make one unit of price.
+#
+# This used to be a single global 1000, which is right for the metals and
+# catastrophic for FX. EURUSD at 1.10000 with a 0.00010 spread rescaled to
+# 1/1000 becomes a price of 1100 and a spread of 0.1 -- which rounds to ZERO.
+# Every spread in the store would have been zero, and every price quantised to
+# ten pips on an instrument that moves in tenths of one. The verifier would have
+# complained about the spreads, but only after a ten-hour download.
+#
+# The file header already carries point_num/point_den, so the format was never
+# the limit; the ingest simply never told it. Storing at the instrument's native
+# precision also means no rescale at all, which is one less place to lose a
+# digit.
+STORE_SCALE = 1000   # the metals; kept for the callers that still assume it
+STORE_SCALE_BY_SYMBOL = {
+    "XAUUSD": 1000,
+    "XAGUSD": 1000,
+    "EURUSD": 100_000,
+    "GBPUSD": 100_000,
+    "USDJPY": 1000,
+}
 
-PLAUSIBLE_USD = {"XAUUSD": (200.0, 20_000.0), "XAGUSD": (2.0, 500.0)}
+
+def store_scale(symbol: str) -> int:
+    return STORE_SCALE_BY_SYMBOL.get(symbol.upper(), STORE_SCALE)
+
+
+PLAUSIBLE_USD = {
+    "XAUUSD": (200.0, 20_000.0),
+    "XAGUSD": (2.0, 500.0),
+    "EURUSD": (0.5, 2.0),
+    "GBPUSD": (0.8, 2.5),
+    "USDJPY": (50.0, 250.0),
+}
 
 
 @dataclass
@@ -269,16 +299,17 @@ def decode_hour(raw: bytes, symbol: str, hour_start: dt.datetime) -> np.ndarray:
     if src_scale is None:
         raise DecodeError(f"no POINT_SCALE for {symbol}; add it before ingesting")
 
-    # Rescale from the instrument's own point size to our storage points.
-    if src_scale == STORE_SCALE:
+    # Rescale from the instrument's own point size to its storage points.
+    dst_scale = store_scale(symbol)
+    if src_scale == dst_scale:
         bid_pts = bid_raw
         ask_pts = ask_raw
     else:
-        bid_pts = np.rint(bid_raw * (STORE_SCALE / src_scale)).astype(np.int64)
-        ask_pts = np.rint(ask_raw * (STORE_SCALE / src_scale)).astype(np.int64)
+        bid_pts = np.rint(bid_raw * (dst_scale / src_scale)).astype(np.int64)
+        ask_pts = np.rint(ask_raw * (dst_scale / src_scale)).astype(np.int64)
 
     lo, hi = PLAUSIBLE_USD.get(symbol, (0.0, 1e9))
-    med = float(np.median(bid_pts)) / STORE_SCALE
+    med = float(np.median(bid_pts)) / dst_scale
     if not (lo <= med <= hi):
         raise DecodeError(
             f"{hour_url(symbol, hour_start)}: median price {med:,.2f} USD is outside "
@@ -365,7 +396,9 @@ def ingest_month(
                 stats.failures.append((hour_url(symbol, h), detail))
 
     path = out_dir / f"{symbol}-{year:04d}-{month:02d}.bin"
-    with TickWriter(path, symbol) as w:
+    # The header records the scale the data was written at. Omitting it
+    # stamped gold's 1/1000 onto every file regardless of instrument.
+    with TickWriter(path, symbol, point_den=store_scale(symbol)) as w:
         for h in hours:
             raw = results.get(h)
             if not raw:

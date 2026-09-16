@@ -6,6 +6,7 @@
 #include "xau/risk.hpp"
 
 #include <cmath>
+#include <string>
 #include <vector>
 
 using namespace xau;
@@ -195,4 +196,30 @@ XAU_TEST(the_lot_cap_is_a_real_ceiling) {
 
     cfg.max_lots = 5.0;
     CHECK_NEAR(size_by_risk(10'000.0, 500, 0.0, spec, cfg), 2.0, 1e-9);
+}
+
+XAU_TEST(eurusd_point_value_is_one_dollar_per_lot) {
+    // Every EURUSD P&L number is built on this: one point (0.00001) on one
+    // standard lot (100,000 units) is exactly 1.00 USD. Get the denominator
+    // wrong by the factor of a hundred that separates FX from gold, and every
+    // result is off by that factor while still looking like money.
+    const SymbolSpec s = SymbolSpec::eurusd_default();
+    CHECK_NEAR(s.usd_per_point_per_lot(), 1.0, 1e-12);
+    CHECK_NEAR(s.price_usd(110000), 1.10000, 1e-12);
+
+    // And lookup by name reaches it rather than silently falling back to gold.
+    CHECK_EQ(SymbolSpec::for_symbol("EURUSD").point_den, 100000);
+    CHECK_EQ(SymbolSpec::for_symbol("EURUSD").name, std::string("EURUSD"));
+}
+
+XAU_TEST(eurusd_sizing_risks_the_requested_fraction) {
+    SizingConfig cfg;
+    cfg.risk_per_trade = 0.01;
+    cfg.vol_target = false;
+    cfg.max_lots = 100.0;
+
+    // 10,000 USD at 1% = 100 USD. A 20-pip stop is 200 points; at 1.00 USD
+    // per point per lot that is 200 USD per lot, so 0.50 lots.
+    const double lots = size_by_risk(10'000.0, 200, 0.0, SymbolSpec::eurusd_default(), cfg);
+    CHECK_NEAR(lots, 0.50, 1e-9);
 }
