@@ -14,6 +14,8 @@ add_library(xaucore STATIC
     src/validation.cpp
     src/risk.cpp
     src/reconcile.cpp
+    src/bar_assembler.cpp
+    src/live.cpp
 )
 
 add_library(xau::core ALIAS xaucore)

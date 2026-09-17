@@ -1,5 +1,7 @@
 #include "xau/engine.hpp"
 
+#include "xau/bar_assembler.hpp"
+
 #include "xau/session.hpp"
 
 #include <algorithm>
@@ -55,7 +57,6 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
 
     const SymbolSpec& spec = cfg_.spec;
     const CostModel&  cm = cfg_.costs;
-    const TimeUs      tf_us = timeframe_us(cfg_.tf);
 
     const TimeUs from = cfg_.from_us ? cfg_.from_us : store_.first_ts();
     const TimeUs to   = cfg_.to_us   ? cfg_.to_us   : store_.last_ts() + 1;
@@ -64,14 +65,9 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
 
     double           balance = cfg_.initial_balance;
     Position         pos{};
-    std::vector<Bar> history;
-    history.reserve(8192);
-
-    Bar           forming{};
-    bool          have_forming = false;
-    TimeUs        forming_open = 0;
-    std::uint64_t spread_sum = 0;
-    double        recent_range_pts = 0.0;
+    // Bar construction lives in BarAssembler so the live session builds bars
+    // with the same code rather than a copy of it.
+    BarAssembler bars(cfg_.tf, cfg_.max_history_bars);
 
     struct Pending {
         bool     active = false;
@@ -87,6 +83,7 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
     bool have_tick = false;
 
     const std::size_t warmup = strategy.warmup_bars();
+    require_history_covers_warmup(cfg_.max_history_bars, warmup);
 
     // Price we could exit the open position at right now: a long sells the bid,
     // a short buys the ask.
@@ -159,7 +156,7 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
         }
 
         const bool   buying = (d.side == Side::Long);
-        const Points px = fill_price(t, buying, cm, recent_range_pts);
+        const Points px = fill_price(t, buying, cm, bars.recent_range_pts());
         const int    sgn = sign_of(d.side);
 
         pos = Position{};
@@ -192,7 +189,7 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
                 const bool buying = (pos.side == Side::Short);
                 close_position(t,
                                CostModel::apply_slippage(base, buying,
-                                                         cm.slippage_pts(recent_range_pts)),
+                                                         cm.slippage_pts(bars.recent_range_pts())),
                                ExitReason::StopLoss);
                 return true;
             }
@@ -248,20 +245,15 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
             }
 
             // 3) bar boundary
-            const TimeUs open = bar_open_for(t.ts_us, cfg_.tf);
-            if (have_forming && open != forming_open) {
-                forming.spread_mean_pts =
-                    forming.ticks ? static_cast<std::uint32_t>(spread_sum / forming.ticks) : 0u;
-                history.push_back(forming);
+            if (bars.close_if_boundary(t)) {
                 ++res.stats.bars;
-                recent_range_pts = static_cast<double>(forming.range_pts());
 
-                const TimeUs close_time = forming_open + tf_us;
+                const TimeUs close_time = bars.last_close_us();
                 res.equity.push_back(EquityPoint{close_time, equity_now(t), balance});
 
-                if (history.size() > warmup) {
+                if (bars.history().size() > warmup) {
                     const BarContext ctx{
-                        .history  = history,
+                        .history  = bars.history(),
                         .position = pos,
                         .spec     = spec,
                         .tf       = cfg_.tf,
@@ -277,32 +269,11 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
                         pending.d       = d;
                     }
                 }
-
-                // Trim with hysteresis: erasing from the front of a vector is
-                // linear, so do it rarely rather than every bar.
-                if (cfg_.max_history_bars && history.size() > cfg_.max_history_bars * 2) {
-                    const auto drop =
-                        static_cast<std::ptrdiff_t>(history.size() - cfg_.max_history_bars);
-                    history.erase(history.begin(), history.begin() + drop);
-                }
-                have_forming = false;
             }
 
-            if (!have_forming) {
-                forming = Bar{};
-                forming.open_time_us = open;
-                forming.open = forming.high = forming.low = forming.close = t.bid_pts;
-                forming_open = open;
-                have_forming = true;
-                spread_sum = 0;
-            }
-
-            if (t.bid_pts > forming.high) forming.high = t.bid_pts;
-            if (t.bid_pts < forming.low) forming.low = t.bid_pts;
-            forming.close = t.bid_pts;
-            ++forming.ticks;
-            spread_sum += t.spread_pts;
-            if (t.spread_pts > forming.spread_max_pts) forming.spread_max_pts = t.spread_pts;
+            // Trims history (only when a bar just closed, and only after the
+            // strategy has seen it) and folds this tick into the forming bar.
+            bars.absorb(t);
 
             // 4) latency-delayed execution. The order was queued at a bar close
             //    and fills on the first tick at or after close + latency, so the
@@ -314,7 +285,7 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
                     const bool buying = (pos.side == Side::Short);
                     close_position(t,
                                    CostModel::apply_slippage(close_side_price(t), buying,
-                                                             cm.slippage_pts(recent_range_pts)),
+                                                             cm.slippage_pts(bars.recent_range_pts())),
                                    ExitReason::StrategyClose);
                 }
                 pending.active = false;
@@ -326,7 +297,7 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
     if (pos.is_open() && cfg_.close_at_end && have_tick) {
         const bool   buying = (pos.side == Side::Short);
         const Points px = CostModel::apply_slippage(close_side_price(last_tick), buying,
-                                                    cm.slippage_pts(recent_range_pts));
+                                                    cm.slippage_pts(bars.recent_range_pts()));
         close_position(last_tick, px, ExitReason::EndOfData);
     }
     if (have_tick) {

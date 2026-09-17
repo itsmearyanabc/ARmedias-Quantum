@@ -9,6 +9,7 @@ add_executable(xau_tests
     test_risk.cpp
     test_bridge.cpp
     test_reconcile.cpp
+    test_live.cpp
 )
 
 target_include_directories(xau_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
