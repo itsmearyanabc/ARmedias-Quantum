@@ -339,6 +339,119 @@ private:
     std::string               label_;
 };
 
+// ===========================================================================
+// Pre-registered hypotheses, round B (docs/RESEARCH-B.md)
+//
+// Every rule above is a bracket trade held for hours: a fixed stop, a fixed
+// target, flat by the rollover. Their measured gross edge is about a tenth of
+// their cost, and every one of them improves monotonically as the bar gets
+// longer. These three test that finding directly instead of adding a fifteenth
+// variation on it: two hold for weeks, where a spread is a rounding error
+// against the move and financing becomes the cost that matters, and one
+// targets a time-of-day effect cheap enough to clear its spread.
+//
+// Parameters are the published ones and are NOT tuned. Lookbacks are in
+// calendar days rather than bars, because a UTC-midnight D1 series carries a
+// two-hour Sunday stub each week and a bar count therefore is not a span of
+// time.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 14. Time-series momentum
+//
+// Moskowitz, Ooi and Pedersen (2012): the sign of an asset's own trailing
+// twelve-month return predicts its next month, across commodities included.
+// Long when the year is up, short when it is down, reviewed every four weeks
+// and otherwise left alone. The stop is a disaster stop, not part of the
+// signal: the published rule has none, and a prop account cannot run without.
+// ---------------------------------------------------------------------------
+class TimeSeriesMomentum final : public Strategy {
+public:
+    struct Config {
+        int         lookback_days = 365;
+        int         review_days = 28;
+        double      stop_atr = 4.0;
+        std::size_t atr_period = 20;
+        double      lots = 0.01;
+    };
+
+    TimeSeriesMomentum();
+    explicit TimeSeriesMomentum(const Config& c);
+
+    [[nodiscard]] const char* name() const noexcept override { return "TimeSeriesMomentum"; }
+    [[nodiscard]] std::size_t warmup_bars() const noexcept override;
+    [[nodiscard]] Decision on_bar(const BarContext& c) override;
+
+private:
+    Config cfg_;
+    Atr    atr_;
+    TimeUs next_review_us_ = 0;
+};
+
+// ---------------------------------------------------------------------------
+// 15. Donchian channel trend (Turtle System 2)
+//
+// Enter on a close beyond the 55-day extreme, exit on a close beyond the
+// opposite 20-day extreme, initial stop two ATRs. 55 and 20 TRADING days are
+// stated here as 77 and 28 calendar days. Correlated with momentum by
+// construction -- both are trend bets -- and counted as a separate trial
+// regardless, because it is one.
+// ---------------------------------------------------------------------------
+class DonchianTrend final : public Strategy {
+public:
+    struct Config {
+        int         entry_days = 77;
+        int         exit_days = 28;
+        double      stop_atr = 2.0;
+        std::size_t atr_period = 20;
+        double      lots = 0.01;
+    };
+
+    DonchianTrend();
+    explicit DonchianTrend(const Config& c);
+
+    [[nodiscard]] const char* name() const noexcept override { return "DonchianTrend"; }
+    [[nodiscard]] std::size_t warmup_bars() const noexcept override;
+    [[nodiscard]] Decision on_bar(const BarContext& c) override;
+
+private:
+    Config cfg_;
+    Atr    atr_;
+};
+
+// ---------------------------------------------------------------------------
+// 16. Asia-hours drift
+//
+// Long through the Asian session, flat for London and New York: the reported
+// tendency of gold to gain outside Western trading hours and give ground
+// around the London fixes. Long-only because the hypothesis is directional.
+// Entered at 23:00 UTC, after the rollover and its wide spreads, and out at
+// 07:00 UTC, before London's first full hour -- so it never crosses a rollover
+// and never pays financing. H1 bars; the stop is a disaster stop.
+// ---------------------------------------------------------------------------
+class AsiaDrift final : public Strategy {
+public:
+    struct Config {
+        int         entry_hour = 23;
+        int         exit_hour = 7;
+        double      stop_atr = 3.0;
+        std::size_t atr_period = 24;
+        double      lots = 0.01;
+    };
+
+    AsiaDrift();
+    explicit AsiaDrift(const Config& c);
+
+    [[nodiscard]] const char* name() const noexcept override { return "AsiaDrift"; }
+    [[nodiscard]] std::size_t warmup_bars() const noexcept override;
+    [[nodiscard]] Decision on_bar(const BarContext& c) override;
+
+private:
+    Config cfg_;
+    Atr    atr_;
+    TimeUs last_night_ = -1;   // one entry a night, even after a stop-out
+};
+
 }  // namespace xau
 
 #endif  // XAU_ZOO_HPP

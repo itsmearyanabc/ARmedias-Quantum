@@ -400,4 +400,150 @@ Decision RegimeGated::on_bar(const BarContext& c) {
     return d;
 }
 
+// ---------------------------------------------------------------------------
+// Round B helpers
+// ---------------------------------------------------------------------------
+namespace {
+
+// Index of the latest bar that had CLOSED by `t`, or npos. History is in time
+// order, so this is a binary search rather than a scan.
+std::size_t last_closed_by(std::span<const Bar> h, Timeframe tf, TimeUs t) noexcept {
+    const TimeUs tf_us = timeframe_us(tf);
+    std::size_t  lo = 0, hi = h.size();   // first bar whose close is after t
+    while (lo < hi) {
+        const std::size_t mid = lo + (hi - lo) / 2;
+        if (h[mid].open_time_us + tf_us <= t) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo == 0 ? static_cast<std::size_t>(-1) : lo - 1;
+}
+
+// High and low of the bars BEFORE the current one that closed within the last
+// `days`. False until the history reaches back that far: a 55-day channel
+// computed over 30 days of data is a different rule, not a warm-up.
+bool prior_channel(const BarContext& c, int days, Points& hi, Points& lo) noexcept {
+    const TimeUs from = c.now_us - static_cast<TimeUs>(days) * kUsPerDay;
+    const auto&  h = c.history;
+    if (h.size() < 2 || h.front().open_time_us + timeframe_us(c.tf) > from) return false;
+    hi = h[h.size() - 2].high;
+    lo = h[h.size() - 2].low;
+    for (std::size_t i = h.size() - 1; i-- > 0;) {
+        if (h[i].open_time_us + timeframe_us(c.tf) <= from) break;
+        hi = std::max(hi, h[i].high);
+        lo = std::min(lo, h[i].low);
+    }
+    return true;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// 14. Time-series momentum
+// ---------------------------------------------------------------------------
+TimeSeriesMomentum::TimeSeriesMomentum() : TimeSeriesMomentum(Config{}) {}
+TimeSeriesMomentum::TimeSeriesMomentum(const Config& c) : cfg_(c), atr_(c.atr_period) {}
+
+std::size_t TimeSeriesMomentum::warmup_bars() const noexcept {
+    // Only the ATR's. The lookback is checked in calendar time on every bar,
+    // and a bar count standing in for it would overshoot by the Sunday stubs:
+    // 367 D1 bars is closer to fourteen months than twelve, with the ATR not
+    // even started until the end of it. The cost of not counting it here: a
+    // history capped below a year (max_history_bars) never trades, so do not
+    // cap one -- the default keeps everything.
+    return cfg_.atr_period + 2;
+}
+
+Decision TimeSeriesMomentum::on_bar(const BarContext& c) {
+    atr_.update(c.bar());
+    if (!atr_.ready()) return Decision::hold();
+
+    const std::size_t ref = last_closed_by(
+        c.history, c.tf, c.now_us - static_cast<TimeUs>(cfg_.lookback_days) * kUsPerDay);
+    if (ref == static_cast<std::size_t>(-1)) return Decision::hold();
+
+    const Points past = c.history[ref].close;
+    const Points now = c.bar().close;
+    const Side   want = now > past ? Side::Long : (now < past ? Side::Short : Side::None);
+
+    if (c.position.is_open()) {
+        if (c.now_us < next_review_us_) return Decision::hold();
+        if (want != c.position.side) return Decision::close("tsmom_review");
+        next_review_us_ = c.now_us + static_cast<TimeUs>(cfg_.review_days) * kUsPerDay;
+        return Decision::hold();
+    }
+
+    if (want == Side::None) return Decision::hold();
+    Points sl = 0, tp = 0;
+    if (!atr_levels(atr_.value(), cfg_.stop_atr, 0.0, sl, tp)) return Decision::hold();
+    next_review_us_ = c.now_us + static_cast<TimeUs>(cfg_.review_days) * kUsPerDay;
+    return entry(want, sl, 0, cfg_.lots, want == Side::Long ? "tsmom_up" : "tsmom_dn");
+}
+
+// ---------------------------------------------------------------------------
+// 15. Donchian channel trend
+// ---------------------------------------------------------------------------
+DonchianTrend::DonchianTrend() : DonchianTrend(Config{}) {}
+DonchianTrend::DonchianTrend(const Config& c) : cfg_(c), atr_(c.atr_period) {}
+
+std::size_t DonchianTrend::warmup_bars() const noexcept {
+    return cfg_.atr_period + 2;   // the channels check their own span; see above
+}
+
+Decision DonchianTrend::on_bar(const BarContext& c) {
+    atr_.update(c.bar());
+    if (!atr_.ready()) return Decision::hold();
+    const Points close = c.bar().close;
+
+    if (c.position.is_open()) {
+        Points hi = 0, lo = 0;
+        if (!prior_channel(c, cfg_.exit_days, hi, lo)) return Decision::hold();
+        if (c.position.side == Side::Long && close < lo) return Decision::close("donchian_exit");
+        if (c.position.side == Side::Short && close > hi) return Decision::close("donchian_exit");
+        return Decision::hold();
+    }
+
+    Points hi = 0, lo = 0;
+    if (!prior_channel(c, cfg_.entry_days, hi, lo)) return Decision::hold();
+    Points sl = 0, tp = 0;
+    if (!atr_levels(atr_.value(), cfg_.stop_atr, 0.0, sl, tp)) return Decision::hold();
+    if (close > hi) return entry(Side::Long, sl, 0, cfg_.lots, "donchian_up");
+    if (close < lo) return entry(Side::Short, sl, 0, cfg_.lots, "donchian_dn");
+    return Decision::hold();
+}
+
+// ---------------------------------------------------------------------------
+// 16. Asia-hours drift
+// ---------------------------------------------------------------------------
+AsiaDrift::AsiaDrift() : AsiaDrift(Config{}) {}
+AsiaDrift::AsiaDrift(const Config& c) : cfg_(c), atr_(c.atr_period) {}
+
+std::size_t AsiaDrift::warmup_bars() const noexcept { return cfg_.atr_period + 2; }
+
+Decision AsiaDrift::on_bar(const BarContext& c) {
+    atr_.update(c.bar());
+    // An hour-of-day rule needs bars no longer than an hour; on H4 or D1 the
+    // close hour says nothing about which session the bar was.
+    if (timeframe_us(c.tf) > kUsPerHour) return Decision::hold();
+
+    const int h = utc_hour(c.now_us);
+    if (c.position.is_open()) {
+        if (h >= cfg_.exit_hour && h < cfg_.entry_hour) return Decision::close("asia_end");
+        return Decision::hold();
+    }
+
+    // The daily break ends at 22:00 UTC in northern summer and 23:00 in
+    // winter, so the 22:00-23:00 bar is empty half the year. The first bar
+    // close at the entry hour OR the hour after takes the trade, and the night
+    // belongs to the weekday it runs into: Sunday night trades, Friday cannot.
+    const bool entry_hour = h == cfg_.entry_hour || h == (cfg_.entry_hour + 1) % 24;
+    if (!entry_hour || !atr_.ready()) return Decision::hold();
+    const TimeUs night = day_start(c.now_us + kUsPerHour);
+    if (utc_weekday(night) > 5 || night == last_night_) return Decision::hold();
+
+    Points sl = 0, tp = 0;
+    if (!atr_levels(atr_.value(), cfg_.stop_atr, 0.0, sl, tp)) return Decision::hold();
+    last_night_ = night;
+    return entry(Side::Long, sl, 0, cfg_.lots, "asia_long");
+}
+
 }  // namespace xau

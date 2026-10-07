@@ -157,6 +157,35 @@ const std::vector<BaselineEntry>& entries() {
                  RegimeGated::mask_of({0, 2, 4}),   // ranging only, a priori
                  "Rsi2RangesOnly");
          }},
+        // Round B: pre-registered in docs/RESEARCH-B.md before any of them was
+        // run on real data. D1 for the first two, H1 for the third.
+        {"TimeSeriesMomentum",
+         "Long when the trailing year is up, short when it is down, reviewed "
+         "every four weeks. Moskowitz-Ooi-Pedersen, untuned.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             TimeSeriesMomentum::Config c;
+             c.lots = lots;
+             return std::make_unique<TimeSeriesMomentum>(c);
+         }},
+        {"DonchianTrend",
+         "Turtle System 2: break of the 55-day extreme, out on the opposite "
+         "20-day extreme, 2-ATR stop. Untuned.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             DonchianTrend::Config c;
+             c.lots = lots;
+             return std::make_unique<DonchianTrend>(c);
+         }},
+        {"AsiaDrift",
+         "Long through the Asian session, 23:00 to 07:00 UTC, flat for London "
+         "and New York. Never crosses a rollover. H1.",
+         true,
+         [](double lots) -> std::unique_ptr<Strategy> {
+             AsiaDrift::Config c;
+             c.lots = lots;
+             return std::make_unique<AsiaDrift>(c);
+         }},
     };
     return v;
 }
