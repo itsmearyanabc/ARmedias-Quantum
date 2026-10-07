@@ -19,6 +19,7 @@
 
 #include "xau/baselines.hpp"
 #include "xau/engine.hpp"
+#include "xau/session.hpp"
 
 #include <vector>
 
@@ -445,6 +446,62 @@ XAU_TEST(swap_accrues_per_night_and_triples_on_wednesday) {
     CHECK_EQ(r.stats.swap_charges, std::uint64_t{3});
     CHECK_NEAR(r.trades[0].swap_usd, -2.50, 1e-9);
     CHECK_NEAR(r.trades[0].net_usd, r.trades[0].gross_usd - 2.50, 1e-9);
+}
+
+XAU_TEST(interest_swap_charges_annual_rate_on_current_notional) {
+    fixture::TempDir dir;
+    std::vector<Tick> ticks;
+    for (int i = 0; i < 72; ++i) {
+        ticks.push_back(tick(kT0 + static_cast<TimeUs>(i) * 3'600'000'000LL, 2'650'000, 200));
+    }
+    const TickStore store = fixture::make_store(dir, ticks);
+
+    BacktestConfig cfg = bare_config();
+    cfg.tf = Timeframe::H1;
+    cfg.apply_swap = true;
+    cfg.swap_hour_utc = 21;
+    cfg.spec.swap_long_annual = -0.036;   // pay 3.6% a year
+    cfg.spec.triple_swap_weekday = 3;
+
+    BacktestEngine engine(store, cfg);
+    BuyAndHold     strat(0.10, Side::Long);
+    const auto     r = engine.run(strat);
+
+    // Notional 2650.000 x 100 oz x 0.10 lots = 26,500 USD.
+    //   -0.036 x 26,500 / 360 = -2.65 USD a night
+    //   Wed x3 + Thu + Fri = 5 nights = -13.25 USD
+    REQUIRE(r.trades.size() == 1);
+    CHECK_EQ(r.stats.swap_charges, std::uint64_t{3});
+    CHECK_NEAR(r.trades[0].swap_usd, -13.25, 1e-9);
+}
+
+XAU_TEST(swap_is_not_charged_for_weekend_rollovers) {
+    fixture::TempDir dir;
+    // Hourly ticks Thu 2020-01-02 00:00 through Mon 2020-01-06 23:00, only
+    // while gold trades: the market is shut Fri 21:00 .. Sun 22:00.
+    std::vector<Tick> ticks;
+    for (int i = 24; i < 24 * 6; ++i) {
+        const TimeUs ts = kT0 + static_cast<TimeUs>(i) * 3'600'000'000LL;
+        if (market_open(ts)) ticks.push_back(tick(ts, 2'650'000, 200));
+    }
+    const TickStore store = fixture::make_store(dir, ticks);
+
+    BacktestConfig cfg = bare_config();
+    cfg.tf = Timeframe::H1;
+    cfg.apply_swap = true;
+    cfg.swap_hour_utc = 21;
+    cfg.spec.swap_long_pts = -50.0;
+    cfg.spec.triple_swap_weekday = 3;   // Wednesday, outside the window
+
+    BacktestEngine engine(store, cfg);
+    BuyAndHold     strat(0.10, Side::Long);
+    const auto     r = engine.run(strat);
+
+    // Thu, Fri and Mon. The Sunday-evening tick crosses the Saturday and Sunday
+    // rollovers as well; neither is a trading night, so neither is billed.
+    REQUIRE(r.trades.size() == 1);
+    CHECK_EQ(r.stats.swap_charges, std::uint64_t{3});
+    CHECK_NEAR(r.trades[0].swap_usd, -1.50, 1e-9);
 }
 
 // ---------------------------------------------------------------------------
