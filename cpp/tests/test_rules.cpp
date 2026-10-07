@@ -100,6 +100,26 @@ XAU_TEST(utc_hour_and_weekday) {
     CHECK_EQ(utc_weekday(-kUsPerDay), 3);         // 1969-12-31 was a Wednesday
 }
 
+XAU_TEST(parse_utc_date_reads_midnight_and_rejects_junk) {
+    TimeUs t = -1;
+    REQUIRE(parse_utc_date("2020-01-01", t));
+    CHECK_EQ(t, kWed);
+    REQUIRE(parse_utc_date("2025-01-01", t));
+    CHECK_EQ(t, TimeUs{1'735'689'600'000'000LL});
+    REQUIRE(parse_utc_date("2024-02-29", t));   // leap day
+    CHECK_EQ(t, TimeUs{1'709'164'800'000'000LL});
+    REQUIRE(parse_utc_date("1970-01-01", t));
+    CHECK_EQ(t, TimeUs{0});
+
+    for (const char* bad : {"", "2025", "2025-1-01", "2025-01-1", "2025/01/01",
+                            "2025-13-01", "2025-00-10", "2025-01-32", "2025-01-01x"}) {
+        TimeUs u = 42;
+        CHECK(!parse_utc_date(bad, u));
+        CHECK_EQ(u, TimeUs{42});   // untouched on failure
+    }
+    CHECK(!parse_utc_date(nullptr, t));
+}
+
 XAU_TEST(in_hours_wraps_past_midnight) {
     // A normal window.
     CHECK(in_hours(kWed + 8 * kUsPerHour, 7, 12));
