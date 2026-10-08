@@ -45,22 +45,6 @@ constexpr double kGatePf = 1.05;
 // counts; a backtest gate has no business being more permissive than that.
 constexpr int kGateMinTrades = 100;
 
-// Samples tick flags. The synthetic generator stamps TF_SYNTHETIC on every
-// tick it writes, which is the only reliable way to tell a store apart from
-// real history after the fact.
-bool looks_synthetic(const TickStore& s) {
-    for (const TickFile& f : s.files()) {
-        const std::span<const Tick> t = f.ticks();
-        if (t.empty()) continue;
-        const std::size_t n = std::min<std::size_t>(t.size(), 1000);
-        for (std::size_t i = 0; i < n; ++i) {
-            if (t[i].flags & TF_SYNTHETIC) return true;
-        }
-        return false;
-    }
-    return false;
-}
-
 std::string ymd(TimeUs us) {
     const std::time_t tt = static_cast<std::time_t>(us / 1'000'000);
     std::tm tm{};

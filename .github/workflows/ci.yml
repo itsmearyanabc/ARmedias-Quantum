@@ -94,12 +94,14 @@ jobs:
         shell: bash
         run: |
           dll=build/msvc-release/bin/xaubridge.dll
-          deps=$(dumpbin //nologo //dependents "$dll" | tr -d '\r')
-          printf '%s\n' "$deps"
-          if printf '%s\n' "$deps" | grep -aiE 'vcruntime|msvcp|api-ms-win-crt|ucrtbase'; then
-            echo "::error::xaubridge.dll depends on the Visual C++ runtime"
-            exit 1
-          fi
+          for f in "$dll" build/msvc-release/bin/lab.exe; do
+            deps=$(dumpbin //nologo //dependents "$f" | tr -d '\r')
+            printf '%s\n' "$deps"
+            if printf '%s\n' "$deps" | grep -aiE 'vcruntime|msvcp|api-ms-win-crt|ucrtbase'; then
+              echo "::error::$f depends on the Visual C++ runtime"
+              exit 1
+            fi
+          done
           python - "$dll" <<'PY'
           import ctypes, sys
           d = ctypes.WinDLL(sys.argv[1])
@@ -122,8 +124,10 @@ jobs:
           if-no-files-found: error
           path: |
             build/msvc-release/bin/xaubridge.dll
+            build/msvc-release/bin/lab.exe
             mt5/XauBridgeEA.mq5
             mt5/README.md
+            docs/CUSTOM-STRATEGIES.md
 
       - name: Generate synthetic ticks
         run: python -m xau_ingest.synth --months 3 --out ../data/ticks/XAUUSD
@@ -172,6 +176,21 @@ jobs:
             echo "::notice::baselines: ${clean}"
           done
           exit $rc
+
+      # The lab end to end: every strategy ranked, the trial ledger written,
+      # and on synthetic ticks no champion -- it must refuse to name one.
+      - name: Lab report
+        shell: bash
+        run: |
+          set -o pipefail
+          ./build/${{ matrix.preset }}/bin/lab data/ticks/XAUUSD XAUUSD --out lab-out 2>&1 | tee lab.log
+          grep -aE "^(ranking|trials|champion)" lab.log | while IFS= read -r line; do
+            clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+            echo "::notice::lab: ${clean}"
+          done
+          test -s lab-out/leaderboard_XAUUSD.csv
+          tr -d '\r' < lab-out/champion_XAUUSD.txt | grep -qx 'name=' || {
+            echo "::error::lab named a champion on synthetic data"; exit 1; }
 
       # The bindings must agree with the C++ suite figure for figure. Copying
       # the module next to the tests avoids PYTHONPATH separator differences

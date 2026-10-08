@@ -154,7 +154,7 @@ enum XauServerDst
   };
 
 //--- inputs: what to trade
-input string       InpStrategy         = "";       // Strategy (registry name; empty = guards only)
+input string       InpStrategy         = "";       // Strategy: registry name, @champion, or empty = guards only
 input XauTimeframe InpTimeframe        = XAU_D1;   // Bar length the strategy was tested on
 input double       InpFixedLots        = 0.01;     // Fixed lots (0 = size by risk)
 input double       InpRiskPct          = 0.0;      // Else: % of equity lost at the stop
@@ -185,6 +185,12 @@ ulong   g_srv_at     = 0;      // ... as of this GetTickCount64()
 int     g_point_den  = 1000;
 int     g_last_halt  = -1;
 string  g_last_msg   = "";
+string  g_strategy   = "";     // the armed registry name; "" = guards only
+int     g_tf         = -1;     // and its bar length (xau_timeframe)
+string  g_champ_note = "";     // last @champion message, so it is printed once
+XauLimits g_lim;               // kept to re-create the bridge on a champion switch
+
+#define CHAMPION_FILE "xau_champion.txt"   // in MQL5\Files, written by the lab
 CTrade  g_trade;
 
 #define BTN_HALT   "XAU_BTN_HALT"
@@ -671,7 +677,7 @@ int FeedHistory(const ENUM_TIMEFRAMES tf, const datetime from, const datetime up
 void Warmup()
   {
    ENUM_TIMEFRAMES coarse = PERIOD_H1;
-   switch(InpTimeframe)
+   switch((XauTimeframe)g_tf)
      {
       case XAU_M1:  coarse = PERIOD_M1;  break;
       case XAU_M5:  coarse = PERIOD_M5;  break;
@@ -698,6 +704,230 @@ void Warmup()
    if(n1 <= 0)
       Print("WARNING: no history loaded. The strategy will hold until it has enough bars.");
    LogBridge();
+  }
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Bar-length names as the lab writes them.                           |
+//+------------------------------------------------------------------+
+int TfFromName(const string s)
+  {
+   string names[7] = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"};
+   for(int i = 0; i < 7; i++)
+      if(s == names[i])
+         return(i);
+   return(-1);
+  }
+string TfName(const int tf)
+  {
+   string names[7] = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"};
+   return((tf >= 0 && tf < 7) ? names[tf] : "?");
+  }
+//+------------------------------------------------------------------+
+//| The champion the lab named: false if the file is missing or not    |
+//| one the lab wrote. An empty name is a valid answer: nobody passed. |
+//+------------------------------------------------------------------+
+bool ReadChampion(string &name, int &tf)
+  {
+   int h = FileOpen(CHAMPION_FILE, FILE_READ | FILE_TXT | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+      return(false);
+   bool header = false;
+   name = "";
+   tf   = -1;
+   while(!FileIsEnding(h))
+     {
+      string line = FileReadString(h);
+      StringTrimLeft(line);
+      StringTrimRight(line);
+      if(line == "xau_champion 1")
+        {
+         header = true;
+         continue;
+        }
+      int eq = StringFind(line, "=");
+      if(eq <= 0)
+         continue;
+      string k = StringSubstr(line, 0, eq);
+      string v = StringSubstr(line, eq + 1);
+      if(k == "name")
+         name = v;
+      else if(k == "tf")
+         tf = TfFromName(v);
+     }
+   FileClose(h);
+   return(header && (name == "" || tf >= 0));
+  }
+//+------------------------------------------------------------------+
+bool CreateContext()
+  {
+   uchar sym[];
+   ArrayResize(sym, 64);
+   CopyToFixed(_Symbol, sym, 64);
+   g_ctx = xau_create(sym, XAU_ABI_EXPECTED, g_lim);
+   return(g_ctx != 0);
+  }
+//+------------------------------------------------------------------+
+//| Arm a registry strategy on the bridge and warm it up.              |
+//+------------------------------------------------------------------+
+bool ArmStrategy(const string name, const int tf)
+  {
+   XauStrategyConfig cfg;
+   ZeroMemory(cfg);
+   cfg.fixed_lots      = InpFixedLots;
+   cfg.risk_per_trade  = (InpFixedLots > 0.0) ? 0.0 : InpRiskPct / 100.0;
+   cfg.contract_size   = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   cfg.volume_min      = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   cfg.volume_max      = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   cfg.volume_step     = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   cfg.timeframe       = tf;
+   cfg.point_den       = g_point_den;
+   cfg.stops_level_pts = (int)MathRound(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) *
+                                        _Point * g_point_den);
+   cfg.max_history_bars = 0;
+   CopyToFixed(name, cfg.strategy, 64);
+   if(xau_arm(g_ctx, cfg) != 0)
+     {
+      LogBridge();
+      return(false);
+     }
+   g_strategy = name;
+   g_tf       = tf;
+   LogBridge();
+   Warmup();
+   return(true);
+  }
+//+------------------------------------------------------------------+
+//| Anything of ours on the symbol: a position or a working order.     |
+//+------------------------------------------------------------------+
+bool OwnExposure()
+  {
+   if(OwnPositionTicket() != 0)
+      return(true);
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket != 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagic)
+         return(true);
+     }
+   return(false);
+  }
+//+------------------------------------------------------------------+
+void ChampionNote(const string msg)
+  {
+   if(msg == g_champ_note)
+      return;
+   g_champ_note = msg;
+   Print("@champion: ", msg);
+  }
+//+------------------------------------------------------------------+
+//| Follow the lab's champion. Only when flat and not halted: a switch |
+//| never abandons a position mid-trade, and a halt is a person's to   |
+//| clear, never the lab's.                                             |
+//+------------------------------------------------------------------+
+void CheckChampion()
+  {
+   string name;
+   int    tf;
+   if(!ReadChampion(name, tf))
+      return;   // missing or unreadable: keep what runs
+   if(name == g_strategy && (name == "" || tf == g_tf))
+      return;
+   string want = (name == "") ? "none (guards only)" : name + " on " + TfName(tf);
+   if(xau_is_halted(g_ctx) != 0)
+     {
+      ChampionNote("champion is now " + want + "; not switching while HALTED");
+      return;
+     }
+   if(OwnExposure())
+     {
+      ChampionNote("champion is now " + want + "; switching once flat");
+      return;
+     }
+   PrintFormat("@champion: switching %s -> %s", (g_strategy == "" ? "none" : g_strategy), want);
+   //--- Arming is one-shot per context, so a switch re-creates the bridge. The
+   //--- state file carries the halt and the loss anchors across it.
+   xau_destroy(g_ctx);
+   g_ctx      = 0;
+   g_strategy = "";
+   g_tf       = -1;
+   if(!CreateContext())
+     {
+      Print("@champion: could not re-create the bridge; removing the EA");
+      ExpertRemove();
+      return;
+     }
+   if(name != "" && !ArmStrategy(name, tf))
+      Print("@champion: could not arm ", name, " (not in this xaubridge.dll?); running the guards only");
+   g_champ_note = "";
+  }
+//+------------------------------------------------------------------+
+//| One journal line per closed position of ours, for `lab --live`:    |
+//| its net result after every cost, and the balance it was made on.   |
+//+------------------------------------------------------------------+
+void JournalPosition(const long pos_id)
+  {
+   if(!HistorySelectByPosition(pos_id))
+      return;
+   double net = 0.0, lots = 0.0;
+   long   magic = -1, close_msc = 0;
+   int    side = 0;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+     {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0)
+         continue;
+      net += HistoryDealGetDouble(d, DEAL_PROFIT) + HistoryDealGetDouble(d, DEAL_SWAP) +
+             HistoryDealGetDouble(d, DEAL_COMMISSION) + HistoryDealGetDouble(d, DEAL_FEE);
+      if(HistoryDealGetInteger(d, DEAL_ENTRY) == DEAL_ENTRY_IN)
+        {
+         magic = HistoryDealGetInteger(d, DEAL_MAGIC);
+         side  = (HistoryDealGetInteger(d, DEAL_TYPE) == DEAL_TYPE_BUY) ? 1 : -1;
+         lots += HistoryDealGetDouble(d, DEAL_VOLUME);
+        }
+      long t = HistoryDealGetInteger(d, DEAL_TIME_MSC);
+      if(t > close_msc)
+         close_msc = t;
+     }
+   if(magic != InpMagic)
+      return;   // not ours
+   double bal_before = AccountInfoDouble(ACCOUNT_BALANCE) - net;
+   string fname = StringFormat("xau_trades_%s_%I64d.csv", _Symbol, AccountInfoInteger(ACCOUNT_LOGIN));
+   int    h = FileOpen(fname, FILE_READ | FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+     {
+      PrintFormat("journal: cannot open %s (error %d)", fname, GetLastError());
+      return;
+     }
+   if(FileSize(h) == 0)
+      FileWriteString(h, "close_utc_ms,position,strategy,magic,side,lots,net,balance_before\r\n");
+   FileSeek(h, 0, SEEK_END);
+   long close_utc = close_msc - OffsetAt((datetime)(close_msc / 1000));
+   FileWriteString(h, StringFormat("%I64d,%I64d,%s,%I64d,%d,%.2f,%.2f,%.2f\r\n", close_utc, pos_id,
+                                   (g_strategy == "" ? "none" : g_strategy), magic, side, lots, net,
+                                   bal_before));
+   FileClose(h);
+  }
+//+------------------------------------------------------------------+
+//| Each closed position of ours goes into the journal once, when the  |
+//| last of it closes. Not in the Strategy Tester: those trades are    |
+//| not live evidence.                                                 |
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+  {
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || MQLInfoInteger(MQL_TESTER))
+      return;
+   if(!HistoryDealSelect(trans.deal))
+      return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol)
+      return;
+   long entry = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY && entry != DEAL_ENTRY_INOUT)
+      return;
+   long pos_id = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+   if(PositionSelectByTicket((ulong)pos_id))
+      return;   // partly closed: journalled once the rest goes
+   JournalPosition(pos_id);
   }
 //+------------------------------------------------------------------+
 int OnInit()
@@ -739,17 +969,16 @@ int OnInit()
    RefreshOffset();
    g_point_den = (int)MathMax(1000.0, MathPow(10.0, _Digits));
 
-   XauLimits lim;
-   ZeroMemory(lim);
-   lim.max_daily_loss_frac = InpMaxDailyLossPct / 100.0;
-   lim.max_drawdown_frac   = InpMaxDrawdownPct / 100.0;
-   lim.initial_balance     = InpInitialBalance;
-   lim.max_spread          = InpMaxSpread;
-   lim.max_lots            = InpMaxLots;
-   lim.max_open_positions  = 1;
-   lim.max_quote_age_ms    = InpMaxQuoteAgeSec * 1000;
-   lim.pending_timeout_ms  = 30000;
-   CopyToFixed((InpKillFile == "") ? "" : FilesPath(InpKillFile), lim.kill_file, 260);
+   ZeroMemory(g_lim);
+   g_lim.max_daily_loss_frac = InpMaxDailyLossPct / 100.0;
+   g_lim.max_drawdown_frac   = InpMaxDrawdownPct / 100.0;
+   g_lim.initial_balance     = InpInitialBalance;
+   g_lim.max_spread          = InpMaxSpread;
+   g_lim.max_lots            = InpMaxLots;
+   g_lim.max_open_positions  = 1;
+   g_lim.max_quote_age_ms    = InpMaxQuoteAgeSec * 1000;
+   g_lim.pending_timeout_ms  = 30000;
+   CopyToFixed((InpKillFile == "") ? "" : FilesPath(InpKillFile), g_lim.kill_file, 260);
    //--- Keyed by account too: the same symbol and magic on a second login is a
    //--- different account with its own day and peak. None in the Strategy
    //--- Tester: each pass is its own account, and a halt or peak carried over
@@ -757,13 +986,9 @@ int OnInit()
    if(!MQLInfoInteger(MQL_TESTER))
       CopyToFixed(FilesPath(StringFormat("xau_state_%s_%I64d_%d.txt", _Symbol,
                                          AccountInfoInteger(ACCOUNT_LOGIN), InpMagic)),
-                  lim.state_file, 260);
+                  g_lim.state_file, 260);
 
-   uchar sym[];
-   ArrayResize(sym, 64);
-   CopyToFixed(_Symbol, sym, 64);
-   g_ctx = xau_create(sym, XAU_ABI_EXPECTED, lim);
-   if(g_ctx == 0)
+   if(!CreateContext())
      {
       Print("xau_create failed. Most likely another chart already runs this EA on ", _Symbol,
             " with magic ", InpMagic, ": give each chart its own InpMagic.");
@@ -775,36 +1000,34 @@ int OnInit()
    g_trade.SetDeviationInPoints((ulong)InpDeviationPts);
    g_trade.SetTypeFillingBySymbol(_Symbol);
 
-   if(InpStrategy == "")
+   string want    = InpStrategy;
+   int    want_tf = (int)InpTimeframe;
+   bool   champ   = (InpStrategy == "@champion");
+   if(champ)
      {
-      Print("No strategy set (InpStrategy): running the guards only, no entries.");
-     }
-   else
-     {
-      XauStrategyConfig cfg;
-      ZeroMemory(cfg);
-      cfg.fixed_lots      = InpFixedLots;
-      cfg.risk_per_trade  = (InpFixedLots > 0.0) ? 0.0 : InpRiskPct / 100.0;
-      cfg.contract_size   = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
-      cfg.volume_min      = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-      cfg.volume_max      = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-      cfg.volume_step     = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-      cfg.timeframe       = (int)InpTimeframe;
-      cfg.point_den       = g_point_den;
-      cfg.stops_level_pts = (int)MathRound(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) *
-                                           _Point * g_point_den);
-      cfg.max_history_bars = 0;
-      CopyToFixed(InpStrategy, cfg.strategy, 64);
-      if(xau_arm(g_ctx, cfg) != 0)
+      if(!ReadChampion(want, want_tf))
         {
-         LogBridge();
-         Print("Could not arm '", InpStrategy, "'. Refusing to run with a strategy that did not load.");
+         Print("@champion: ", CHAMPION_FILE, " missing or unreadable in MQL5\\Files; running the guards ",
+               "only until the lab writes one.");
+         want = "";
+        }
+      else
+         Print("@champion: the lab names ", (want == "" ? "nobody -- guards only" : want + " on " + TfName(want_tf)));
+     }
+   if(want == "")
+     {
+      Print("No strategy armed: running the guards only, no entries.");
+     }
+   else if(!ArmStrategy(want, want_tf))
+     {
+      if(!champ)
+        {
+         Print("Could not arm '", want, "'. Refusing to run with a strategy that did not load.");
          xau_destroy(g_ctx);
          g_ctx = 0;
          return(INIT_FAILED);
         }
-      LogBridge();
-      Warmup();
+      Print("@champion: could not arm ", want, " (not in this xaubridge.dll?); running the guards only");
      }
 
    MakeButton(BTN_HALT, "HALT", 40, clrFireBrick);
@@ -813,7 +1036,7 @@ int OnInit()
 
    PrintFormat("XauBridgeEA ready on %s (%s account%s) | strategy: %s | daily %.1f%% dd %.1f%%",
                _Symbol, (mode == ACCOUNT_TRADE_MODE_DEMO ? "DEMO" : "REAL"),
-               (InpDryRun ? ", DRY RUN" : ""), (InpStrategy == "" ? "none" : InpStrategy),
+               (InpDryRun ? ", DRY RUN" : ""), (g_strategy == "" ? "none" : g_strategy),
                InpMaxDailyLossPct, InpMaxDrawdownPct);
    ShowStatus();
    return(INIT_SUCCEEDED);
@@ -872,7 +1095,13 @@ void OnTimer()
       return;
    static int ticks = 0;
    if(++ticks % 60 == 0)
+     {
       RefreshOffset();   // DST changes the broker's offset twice a year
+      if(InpStrategy == "@champion")
+         CheckChampion();
+      if(g_ctx == 0)
+         return;
+     }
 
    XauDecision d;
    ZeroMemory(d);

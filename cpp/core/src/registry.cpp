@@ -1,17 +1,20 @@
 #include "xau/registry.hpp"
 
 #include "xau/baselines.hpp"
+#include "xau/custom.hpp"
 #include "xau/rules.hpp"
 #include "xau/zoo.hpp"
 
 #include <cstring>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace xau {
 namespace {
 
-const std::vector<BaselineEntry>& entries() {
-    static const std::vector<BaselineEntry> v = {
+std::vector<BaselineEntry> builtin_entries() {
+    return {
         {"LondonOpeningRange",
          "Range over the London open hour, trade the break. ATR band cuts both "
          "tails: too narrow is noise, too wide means the move already happened.",
@@ -167,7 +170,8 @@ const std::vector<BaselineEntry>& entries() {
              TimeSeriesMomentum::Config c;
              c.lots = lots;
              return std::make_unique<TimeSeriesMomentum>(c);
-         }},
+         },
+         Timeframe::D1},
         {"DonchianTrend",
          "Turtle System 2: break of the 55-day extreme, out on the opposite "
          "20-day extreme, 2-ATR stop. Untuned.",
@@ -176,7 +180,8 @@ const std::vector<BaselineEntry>& entries() {
              DonchianTrend::Config c;
              c.lots = lots;
              return std::make_unique<DonchianTrend>(c);
-         }},
+         },
+         Timeframe::D1},
         {"AsiaDrift",
          "Long through the Asian session, 23:00 to 07:00 UTC, flat for London "
          "and New York. Never crosses a rollover. H1.",
@@ -185,8 +190,53 @@ const std::vector<BaselineEntry>& entries() {
              AsiaDrift::Config c;
              c.lots = lots;
              return std::make_unique<AsiaDrift>(c);
-         }},
+         },
+         Timeframe::H1},
     };
+}
+
+class Collector final : public CustomRegistrar {
+public:
+    explicit Collector(std::vector<BaselineEntry>& out) : out_(out) {}
+    void begin_source(const char* file, const char* sha256) override {
+        file_ = file;
+        sha_ = sha256;
+    }
+    void add(const char* name, const char* description, Timeframe tf,
+             std::function<std::unique_ptr<Strategy>(double)> make) override {
+        BaselineEntry e{name, description, true, std::move(make)};
+        e.tf = tf;
+        e.custom = true;
+        e.source = file_;
+        e.source_sha256 = sha_;
+        out_.push_back(std::move(e));
+    }
+
+private:
+    std::vector<BaselineEntry>& out_;
+    const char*                 file_ = nullptr;
+    const char*                 sha_ = nullptr;
+};
+
+// Built once, on first use. A name used twice is refused outright: the lab,
+// the trial ledger and the MT5 bridge all find strategies by name, and two
+// strategies answering to one name would trade one and report the other.
+const std::vector<BaselineEntry>& entries() {
+    static const std::vector<BaselineEntry> v = [] {
+        std::vector<BaselineEntry> out = builtin_entries();
+        Collector                  c(out);
+        register_custom_strategies(c);
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            if (out[i].name == nullptr || out[i].name[0] == '\0' || !out[i].make)
+                throw std::logic_error("strategy registry: an entry has no name or factory");
+            for (std::size_t j = 0; j < i; ++j) {
+                if (std::strcmp(out[i].name, out[j].name) == 0)
+                    throw std::logic_error(std::string("strategy registry: two strategies are named ") +
+                                           out[i].name);
+            }
+        }
+        return out;
+    }();
     return v;
 }
 

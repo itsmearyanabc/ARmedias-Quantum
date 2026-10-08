@@ -130,4 +130,9 @@ private:
 bool parse_tick_filename(std::string_view filename, std::string_view symbol,
                          int& year, int& month);
 
+// Whether a store holds generated ticks. The synthetic generator stamps
+// TF_SYNTHETIC on every tick it writes, which is the only reliable way to tell
+// a store apart from real history after the fact. Samples the first file.
+[[nodiscard]] bool looks_synthetic(const TickStore& s);
+
 }  // namespace xau

@@ -20,9 +20,16 @@ if(WIN32)
     # DLL means static CRT for everything linked into it -- MSVC refuses to mix
     # runtimes (LNK2038) -- so it gets its own build of the core, from the same
     # sources the tests run.
-    get_target_property(_core_src xaucore SOURCES)
+    get_target_property(_core_rel xaucore SOURCES)
     get_target_property(_core_dir xaucore SOURCE_DIR)
-    list(TRANSFORM _core_src PREPEND "${_core_dir}/")
+    set(_core_src "")
+    foreach(_f IN LISTS _core_rel)   # custom strategies come in absolute
+        if(IS_ABSOLUTE "${_f}")
+            list(APPEND _core_src "${_f}")
+        else()
+            list(APPEND _core_src "${_core_dir}/${_f}")
+        endif()
+    endforeach()
     set(_static_crt "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
     add_library(xaucore_static_crt STATIC ${_core_src})

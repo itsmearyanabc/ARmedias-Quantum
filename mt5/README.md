@@ -39,8 +39,8 @@ struct against its own, and refuses to run on any mismatch.
 
 | input | default | meaning |
 |---|---|---|
-| `InpStrategy` | *(empty)* | Registry name, e.g. `TimeSeriesMomentum`, `DonchianTrend`, `AsiaDrift`, `LondonOpeningRange`. Empty = run the guards only, never enter. |
-| `InpTimeframe` | D1 | The bar length the strategy was tested on: D1 for TimeSeriesMomentum and DonchianTrend, H1 for AsiaDrift, M15 for most others. |
+| `InpStrategy` | *(empty)* | Registry name, e.g. `TimeSeriesMomentum`, `DonchianTrend`, `AsiaDrift`, or any custom strategy. `@champion` = trade whatever the lab names in `MQL5\Files\xau_champion.txt`, switching only when flat and never while halted ([`docs/CUSTOM-STRATEGIES.md`](../docs/CUSTOM-STRATEGIES.md)). Empty = run the guards only, never enter. |
+| `InpTimeframe` | D1 | The bar length the strategy was tested on: D1 for TimeSeriesMomentum and DonchianTrend, H1 for AsiaDrift, M15 for most others. Ignored with `@champion`: the champion file says. |
 | `InpFixedLots` | 0.01 | Trade exactly this size. Set 0 to size by risk instead. |
 | `InpRiskPct` | 0 | With fixed lots 0: % of equity lost if the stop is hit (max 5). Needs a strategy that sets a stop. |
 | `InpWarmupDays` | 400 | History fed in at start-up so long lookbacks are warm on the first live bar. |
@@ -77,6 +77,10 @@ struct against its own, and refuses to run on any mismatch.
    decision can never become two orders. A failed **entry** is not retried —
    its bar has passed. A failed **close** is retried each second, five attempts
    in all, then the bridge halts and flattens: an exit is never dropped.
+
+Every closed position of this EA is appended to
+`MQL5\Files\xau_trades_<symbol>_<login>.csv` (strategy, net after all costs,
+balance) — the live evidence `lab --live` learns from.
 
 A one-second timer re-checks the kill file and any order whose result never
 came back, so both work with the market closed. The chart shows a status panel

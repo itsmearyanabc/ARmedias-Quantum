@@ -24,6 +24,7 @@ optimises for instead.
 | 6 | Validation suite | built — **gate failed** (DSR 0.053 gold, 0.000 silver) |
 | — | Round B: longer-horizon hypotheses | pre-registered ([`docs/RESEARCH-B.md`](docs/RESEARCH-B.md)); real-data run pending |
 | 7 | Risk, prop solver, MT5 bridge | **built** — the EA trades the armed strategy through the DLL; parity with the backtest proven in tests; the EA itself not yet compiled — that needs MetaEditor on Windows ([`mt5/README.md`](mt5/README.md)) |
+| — | Strategy lab | **built** — drop AI-written strategies into `cpp/strategies/custom/`; conformance-tested, ranked with a persistent trial ledger, champion traded by the EA, promoted or retired on live results ([`docs/CUSTOM-STRATEGIES.md`](docs/CUSTOM-STRATEGIES.md)) |
 | 8 | Demo forward test (6+ weeks) | not started — needs a strategy that passes round B |
 | 9 | Challenge | not started |
 

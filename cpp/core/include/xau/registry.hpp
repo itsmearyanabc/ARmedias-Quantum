@@ -5,6 +5,7 @@
 // the other, with nothing to indicate they were different.
 #pragma once
 
+#include "xau/bar.hpp"
 #include "xau/strategy.hpp"
 
 #include <functional>
@@ -23,6 +24,12 @@ struct BaselineEntry {
     // Lots is a parameter rather than baked in because position size belongs to
     // the caller, not the strategy: the risk layer owns it from Phase 7.
     std::function<std::unique_ptr<Strategy>(double lots)> make;
+    // The bar length it was written for; COUNT = unspecified (the caller's).
+    Timeframe tf = Timeframe::COUNT;
+    // From cpp/strategies/custom/: the file and the SHA-256 of its text.
+    bool        custom = false;
+    const char* source = nullptr;
+    const char* source_sha256 = nullptr;
 };
 
 // Stable for the life of the program; entries may be referenced freely.
