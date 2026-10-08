@@ -17,3 +17,7 @@
 *.png   binary
 *.ttf   binary
 *.pdf   binary
+
+# Windows scripts and the guide beside them: cmd misreads LF-only batch files
+*.bat           text eol=crlf
+desktop/*.txt   text eol=crlf

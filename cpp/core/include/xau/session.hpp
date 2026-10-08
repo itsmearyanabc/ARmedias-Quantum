@@ -32,6 +32,36 @@ constexpr TimeUs floor_div(TimeUs a, TimeUs b) noexcept {
 
 constexpr TimeUs day_start(TimeUs us) noexcept { return floor_div(us, kUsPerDay) * kUsPerDay; }
 
+// Days since 1970-01-01 for a proleptic Gregorian date (Hinnant's algorithm).
+constexpr long long days_from_civil(int y, int m, int d) noexcept {
+    y -= m <= 2 ? 1 : 0;
+    const long long era = (y >= 0 ? y : y - 399) / 400;
+    const long long yoe = y - era * 400;
+    const long long doy = (153LL * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+// "YYYY-MM-DD" -> midnight UTC of that day. False on anything else, so a typo
+// in a holdout boundary fails loudly instead of silently meaning 1970.
+constexpr bool parse_utc_date(const char* s, TimeUs& out) noexcept {
+    if (s == nullptr) return false;
+    int v[3] = {0, 0, 0};
+    const int width[3] = {4, 2, 2};
+    int       pos = 0;
+    for (int f = 0; f < 3; ++f) {
+        for (int k = 0; k < width[f]; ++k, ++pos) {
+            if (s[pos] < '0' || s[pos] > '9') return false;
+            v[f] = v[f] * 10 + (s[pos] - '0');
+        }
+        if (f < 2 && s[pos++] != '-') return false;
+    }
+    if (s[pos] != '\0') return false;
+    if (v[1] < 1 || v[1] > 12 || v[2] < 1 || v[2] > 31) return false;
+    out = static_cast<TimeUs>(days_from_civil(v[0], v[1], v[2])) * kUsPerDay;
+    return true;
+}
+
 constexpr int utc_hour(TimeUs us) noexcept {
     return static_cast<int>(floor_div(us - day_start(us), kUsPerHour));
 }

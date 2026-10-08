@@ -39,6 +39,15 @@ struct SymbolSpec {
     double swap_short_pts = 0.0;
     int    triple_swap_weekday = 3;  // Wednesday: Mon=1 .. Sun=7 (ISO)
 
+    // Swap as an annual interest rate on the position's CURRENT notional,
+    // signed (negative = you pay), charged at 1/360 per night. This is MT5's
+    // SYMBOL_SWAP_MODE_INTEREST_CURRENT, and it is the mode that stays honest
+    // across a decade: a fixed points figure charges the same at 1,050 USD as
+    // at 2,600, when the financing on a gold position scales with its price.
+    // Additive with the points figure above; a broker uses one or the other.
+    double swap_long_annual = 0.0;
+    double swap_short_annual = 0.0;
+
     // USD moved per point, per lot.
     //
     // XAUUSD: 100 oz x 0.001 USD/point = 0.10 USD per point per lot. A 1.00 USD
@@ -138,5 +147,25 @@ struct SymbolSpec {
         return xauusd_default();
     }
 };
+
+// Overnight financing for research runs, as annual rates on notional (signed,
+// negative = you pay).
+//
+// An ASSUMPTION, not a measurement, and it stands in only until
+// config/symbol_spec.json carries the broker's own figures. Roughly: the USD
+// policy rate averaged over 2015-2024 (about 1.5-2%) plus a retail markup of
+// about 2.5% on longs; shorts earn the rate less the markup, which nets to a
+// small charge. Zero -- the library default -- is the one value known to be
+// wrong for any position held past the rollover, and it is what every daily
+// result before this was priced at.
+struct Financing {
+    double long_annual = -0.045;
+    double short_annual = -0.010;
+};
+
+inline void apply_financing(SymbolSpec& s, const Financing& f, double mult) noexcept {
+    s.swap_long_annual = f.long_annual * mult;
+    s.swap_short_annual = f.short_annual * mult;
+}
 
 }  // namespace xau

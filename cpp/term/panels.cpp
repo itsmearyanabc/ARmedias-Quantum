@@ -711,10 +711,16 @@ void start_backtest(AppState& app) {
     const BaselineEntry& entry = reg[static_cast<std::size_t>(app.strategy_index)];
 
     BacktestConfig cfg;
-    cfg.spec = SymbolSpec::xauusd_default();
+    // The store's own contract terms. Gold's on a silver store rescales every
+    // P&L figure: silver's lot is 5,000 oz to gold's 100.
+    cfg.spec = SymbolSpec::for_symbol(app.symbol);
     cfg.tf = app.tf;
     cfg.initial_balance = app.initial_balance;
     cfg.apply_swap = app.apply_swap;
+    // The default spec carries no swap rate, so without this the checkbox
+    // charged nothing. Financing is the research assumption until the
+    // broker's own figures are in config/symbol_spec.json.
+    if (app.apply_swap) apply_financing(cfg.spec, Financing{}, 1.0);
     cfg.costs.slip_base_pts = 15.0;
     cfg.costs.slip_vol_coef = 0.05;
     cfg.costs.latency_us = 150'000;
@@ -871,11 +877,11 @@ void panel_runner(AppState& app) {
     // label to the RIGHT, so two side by side overflow a docked side panel and
     // the labels get clipped.
     ImGui::Spacing();
-    ImGui::SetNextItemWidth(96);
+    ImGui::SetNextItemWidth(150);
     ImGui::InputDouble("lots", &app.lots, 0.01, 0.10, "%.2f");
-    ImGui::SetNextItemWidth(96);
+    ImGui::SetNextItemWidth(150);
     ImGui::InputDouble("balance", &app.initial_balance, 1000.0, 5000.0, "%.0f");
-    ImGui::SetNextItemWidth(96);
+    ImGui::SetNextItemWidth(150);
     ImGui::InputDouble("commission", &app.commission, 1.0, 5.0, "%.2f");
     ImGui::Checkbox("apply swap", &app.apply_swap);
 
@@ -885,9 +891,9 @@ void panel_runner(AppState& app) {
     ImGui::TextUnformatted("cost stress - must survive 2x (PLAN section 8)");
     ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(130);
     ImGui::InputDouble("spread x", &app.spread_mult, 0.25, 1.0, "%.2f");
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(130);
     ImGui::InputDouble("slip x", &app.slippage_mult, 0.25, 1.0, "%.2f");
     if (ImGui::Button("1x")) {
         app.spread_mult = 1.0;
@@ -1037,7 +1043,7 @@ void panel_blotter(AppState& app) {
     }
 
     const std::vector<Trade>& tr = app.bt->trades;
-    const SymbolSpec          spec = SymbolSpec::xauusd_default();
+    const SymbolSpec          spec = SymbolSpec::for_symbol(app.symbol);
 
     // Rejections are shown next to the trade count, never hidden: a strategy
     // that is mostly rejected looks profitable on the trades that survived.
@@ -1236,7 +1242,8 @@ void draw_ui(AppState& app) {
             ImGui::MenuItem("Risk gauges");
             ImGui::EndDisabled();
             ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
-            ImGui::TextUnformatted("  optimizer needs Phase 6, gauges Phase 7");
+            ImGui::TextUnformatted("  not built yet: run validate for the search,");
+            ImGui::TextUnformatted("  the MT5 EA shows live risk on its chart");
             ImGui::PopStyleColor();
             ImGui::EndMenu();
         }

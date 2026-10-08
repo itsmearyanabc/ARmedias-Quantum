@@ -224,13 +224,26 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
             }
 
             // 1) rollover swap
+            //
+            // Monday to Friday rollovers only: the triple night pays for the
+            // weekend in advance, so 7 nights a week. The first tick after a
+            // weekend crosses the Saturday and Sunday rollovers too, and
+            // charging those as well would bill 9.
             while (cfg_.apply_swap && t.ts_us >= next_swap) {
-                if (pos.is_open()) {
+                if (pos.is_open() && utc_weekday(next_swap) <= 5) {
                     const double mult =
                         (utc_weekday(next_swap) == spec.triple_swap_weekday) ? 3.0 : 1.0;
-                    const double pts =
-                        (pos.side == Side::Long) ? spec.swap_long_pts : spec.swap_short_pts;
-                    pos.swap_usd += pts * spec.usd_per_point_per_lot() * pos.lots * mult;
+                    const bool   is_long = pos.side == Side::Long;
+                    const double pts = is_long ? spec.swap_long_pts : spec.swap_short_pts;
+                    const double annual =
+                        is_long ? spec.swap_long_annual : spec.swap_short_annual;
+                    // Notional at the price the position would close at now.
+                    const Points px = is_long ? t.bid_pts : t.ask_pts();
+                    const double notional =
+                        spec.price_usd(px) * spec.contract_size * pos.lots;
+                    pos.swap_usd += (pts * spec.usd_per_point_per_lot() * pos.lots +
+                                     annual * notional / 360.0) *
+                                    mult;
                     ++res.stats.swap_charges;
                 }
                 next_swap += kUsPerDay;
@@ -249,7 +262,9 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
                 ++res.stats.bars;
 
                 const TimeUs close_time = bars.last_close_us();
-                res.equity.push_back(EquityPoint{close_time, equity_now(t), balance});
+                if (close_time >= cfg_.trade_from_us) {
+                    res.equity.push_back(EquityPoint{close_time, equity_now(t), balance});
+                }
 
                 if (bars.history().size() > warmup) {
                     const BarContext ctx{
@@ -280,7 +295,8 @@ BacktestResult BacktestEngine::run(Strategy& strategy) {
             //    price genuinely moves underneath it.
             if (pending.active && t.ts_us >= pending.exec_at) {
                 if (pending.d.kind == Decision::Kind::Enter) {
-                    try_enter(t, pending.d);
+                    if (t.ts_us >= cfg_.trade_from_us) try_enter(t, pending.d);
+                    else ++res.stats.entries_before_trade_from;
                 } else if (pending.d.kind == Decision::Kind::Close && pos.is_open()) {
                     const bool buying = (pos.side == Side::Short);
                     close_position(t,

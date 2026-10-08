@@ -87,10 +87,9 @@ int main(int argc, char** argv) {
         } else if (a == "--holdout-from" && i + 1 < argc) {
             holdout_from = std::atoi(argv[++i]);
         } else if (a == "--tf" && i + 1 < argc) {
-            const std::string want = argv[++i];
-            for (int k = 0; k < static_cast<int>(Timeframe::COUNT); ++k) {
-                const auto cand = static_cast<Timeframe>(k);
-                if (want == timeframe_name(cand)) tf = cand;
+            if (!parse_timeframe(argv[++i], tf)) {
+                std::fprintf(stderr, "unknown timeframe: %s\n", argv[i]);
+                return 2;
             }
         } else if (!a.empty() && a[0] != '-') {
             if (positional == 0) dir = a;

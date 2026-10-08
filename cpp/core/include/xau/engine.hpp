@@ -47,6 +47,11 @@ struct BacktestConfig {
     double initial_balance = 10'000.0;
     TimeUs from_us = 0;
     TimeUs to_us = 0;            // 0 = to the end of the store
+    // No position may open before this; 0 = from_us. The strategy still sees
+    // every bar from from_us, so a twelve-month lookback can be warm on the
+    // first day of a holdout without one trade being taken on data the
+    // holdout excludes. Equity is recorded from here too.
+    TimeUs trade_from_us = 0;
     bool   close_at_end = true;
 
     // Swap is charged when this hour rolls over. The broker's rollover is
@@ -70,6 +75,7 @@ struct BacktestStats {
     std::uint64_t rejected_volume = 0;
     std::uint64_t rejected_in_position = 0;
     std::uint64_t swap_charges = 0;
+    std::uint64_t entries_before_trade_from = 0;   // discarded, not rejected
     double        wall_seconds = 0.0;
 
     [[nodiscard]] std::uint64_t rejected_total() const noexcept {

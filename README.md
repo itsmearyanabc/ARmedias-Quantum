@@ -11,20 +11,25 @@ optimises for instead.
 
 ---
 
-## Status: builds and runs locally · Phase 3 gate waits on the tick ingest
+## Status: platform built · no strategy validated · MT5 bot ready for a demo trial
 
 | Phase | | |
 |---|---|---|
-| 0 | Toolchain and data foundation | gates met — real data + MT5 spec outstanding |
+| 0 | Toolchain and data foundation | gates met — 10 years of gold and silver ticks ingested; broker spec outstanding |
 | 1 | Backtest engine and cost model | **complete** |
 | 2 | Terminal MVP | **runs** — gate signed |
-| 3 | Rule baselines | built — **gate blocked on real data** |
-| 4 | Feature engine and labels | not started |
-| 5 | Meta-labeling model | not started |
-| 6 | Validation suite | not started |
-| 7 | Risk, prop solver, MT5 bridge | not started |
-| 8 | Demo forward test (6+ weeks) | not started |
+| 3 | Rule baselines | **gate failed** at M15–H1; one D1 configuration passed, priced without overnight financing ([`docs/RESULTS.md`](docs/RESULTS.md)) |
+| 4 | Feature engine and labels | built — leakage tests green |
+| 5 | Meta-labeling model | built — **gate failed** (AUC ≈ 0.51–0.53) |
+| 6 | Validation suite | built — **gate failed** (DSR 0.053 gold, 0.000 silver) |
+| — | Round B: longer-horizon hypotheses | pre-registered ([`docs/RESEARCH-B.md`](docs/RESEARCH-B.md)); real-data run pending |
+| 7 | Risk, prop solver, MT5 bridge | **built** — the EA trades the armed strategy through the DLL; parity with the backtest proven in tests; the EA itself not yet compiled — that needs MetaEditor on Windows ([`mt5/README.md`](mt5/README.md)) |
+| — | Strategy lab | **built** — drop AI-written strategies into `cpp/strategies/custom/`; conformance-tested, ranked with a persistent trial ledger, champion traded by the EA, promoted or retired on live results ([`docs/CUSTOM-STRATEGIES.md`](docs/CUSTOM-STRATEGIES.md)) |
+| 8 | Demo forward test (6+ weeks) | not started — needs a strategy that passes round B |
 | 9 | Challenge | not started |
+
+The detailed checklists below record each phase as it was built; where they
+disagree with this table or with `docs/RESULTS.md`, those are current.
 
 ### Phase 0 checklist
 

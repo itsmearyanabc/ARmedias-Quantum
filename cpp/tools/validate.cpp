@@ -10,11 +10,13 @@
 // for the number of trials and the shape of its returns, and measures how often
 // picking the in-sample winner would have picked wrongly.
 //
-//   validate [dir] [symbol] [--tf D1] [--blocks 10] [--lots X]
+//   validate [dir] [symbol] [--tf D1] [--blocks 10] [--lots X] [--trials N]
+//            [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--swap-long R] [--swap-short R]
 
 #include "xau/bar.hpp"
 #include "xau/engine.hpp"
 #include "xau/registry.hpp"
+#include "xau/session.hpp"
 #include "xau/tick_store.hpp"
 #include "xau/validation.hpp"
 
@@ -40,6 +42,9 @@ int main(int argc, char** argv) {
     // the survivors is precisely the bias the deflated Sharpe exists to remove,
     // so undercounting here quietly reintroduces it.
     std::size_t trials_override = 0;
+    Financing   fin;
+    TimeUs      from_us = 0;
+    TimeUs      to_us = 0;
 
     int positional = 0;
     for (int i = 1; i < argc; ++i) {
@@ -48,13 +53,22 @@ int main(int argc, char** argv) {
             lots = std::atof(argv[++i]);
         } else if (a == "--trials" && i + 1 < argc) {
             trials_override = static_cast<std::size_t>(std::atoi(argv[++i]));
+        } else if (a == "--swap-long" && i + 1 < argc) {
+            fin.long_annual = std::atof(argv[++i]);
+        } else if (a == "--swap-short" && i + 1 < argc) {
+            fin.short_annual = std::atof(argv[++i]);
+        } else if ((a == "--from" || a == "--to") && i + 1 < argc) {
+            if (!parse_utc_date(argv[++i], a == "--from" ? from_us : to_us)) {
+                std::fprintf(stderr, "bad date for %s: %s (want YYYY-MM-DD)\n", a.c_str(),
+                             argv[i]);
+                return 2;
+            }
         } else if (a == "--blocks" && i + 1 < argc) {
             blocks = static_cast<std::size_t>(std::atoi(argv[++i]));
         } else if (a == "--tf" && i + 1 < argc) {
-            const std::string want = argv[++i];
-            for (int k = 0; k < static_cast<int>(Timeframe::COUNT); ++k) {
-                const auto cand = static_cast<Timeframe>(k);
-                if (want == timeframe_name(cand)) tf = cand;
+            if (!parse_timeframe(argv[++i], tf)) {
+                std::fprintf(stderr, "unknown timeframe: %s\n", argv[i]);
+                return 2;
             }
         } else if (!a.empty() && a[0] != '-') {
             if (positional == 0) dir = a;
@@ -66,12 +80,18 @@ int main(int argc, char** argv) {
 
     try {
         const TickStore store = TickStore::open(dir, symbol);
-        const TimeUs    t0 = store.first_ts();
-        const TimeUs    t1 = store.last_ts();
+        const TimeUs    t0 = from_us ? from_us : store.first_ts();
+        const TimeUs    t1 = to_us ? to_us : store.last_ts();
+        if (t1 <= t0) {
+            std::fprintf(stderr, "empty window\n");
+            return 2;
+        }
         const TimeUs    span = (t1 - t0) / static_cast<TimeUs>(blocks);
 
         std::printf("store    %s (%s)\n", dir.c_str(), symbol.c_str());
-        std::printf("bars     %s, %zu blocks\n\n", timeframe_name(tf), blocks);
+        std::printf("bars     %s, %zu blocks\n", timeframe_name(tf), blocks);
+        std::printf("swap     long %+.2f%%  short %+.2f%% a year on notional\n\n",
+                    fin.long_annual * 100.0, fin.short_annual * 100.0);
 
         BacktestConfig cfg;
         cfg.spec = SymbolSpec::for_symbol(symbol);
@@ -81,6 +101,9 @@ int main(int argc, char** argv) {
         cfg.costs.slip_vol_coef = 0.05;
         cfg.costs.latency_us = 150'000;
         cfg.costs.commission_per_lot_round_usd = 7.0;
+        cfg.from_us = from_us;
+        cfg.to_us = to_us;
+        apply_financing(cfg.spec, fin, 1.0);
 
         struct Row {
             std::string         name;
@@ -163,6 +186,12 @@ int main(int argc, char** argv) {
         std::printf("  skew %.2f  kurtosis %.2f  (normal is 0.00 / 3.00)\n", bm.skew,
                     bm.kurtosis);
         std::printf("  trials         %zu   SR spread across them %.4f\n", n_trials, sm.stdev);
+        if (trials_override == 0) {
+            std::printf("  WARNING        --trials not given: charged only for the %zu strategies\n"
+                        "                 in this run. Pass every configuration ever evaluated on\n"
+                        "                 this data (docs/RESEARCH-B.md: 73), or this DSR flatters.\n",
+                        n_trials);
+        }
         std::printf("  benchmark      %.4f  <- the Sharpe %zu zero-edge strategies would\n",
                     bench, n_trials);
         std::printf("                         produce by luck alone\n");

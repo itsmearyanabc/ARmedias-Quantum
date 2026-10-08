@@ -86,6 +86,33 @@ jobs:
               done
           exit 1
 
+      # The shipped DLL itself: it must load, export the ABI, and need no
+      # Visual C++ runtime (MetaTrader machines often lack one). dumpbin lists
+      # what the loader will look for; ctypes loads it and calls in.
+      - name: Check MT5 bridge DLL
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          dll=build/msvc-release/bin/xaubridge.dll
+          for f in "$dll" build/msvc-release/bin/lab.exe; do
+            deps=$(dumpbin //nologo //dependents "$f" | tr -d '\r')
+            printf '%s\n' "$deps"
+            if printf '%s\n' "$deps" | grep -aiE 'vcruntime|msvcp|api-ms-win-crt|ucrtbase'; then
+              echo "::error::$f depends on the Visual C++ runtime"
+              exit 1
+            fi
+          done
+          python - "$dll" <<'PY'
+          import ctypes, sys
+          d = ctypes.WinDLL(sys.argv[1])
+          v = d.xau_abi_version()
+          sizes = [d.xau_struct_size(i) for i in range(5)]
+          print("abi", v, "sizes", sizes)
+          if v != 3 or sizes != [128, 112, 576, 128, 56]:
+              print("::error::xaubridge.dll ABI", v, sizes)
+              sys.exit(1)
+          PY
+
       - name: Generate synthetic ticks
         run: python -m xau_ingest.synth --months 3 --out ../data/ticks/XAUUSD
         working-directory: python
@@ -133,6 +160,100 @@ jobs:
             echo "::notice::baselines: ${clean}"
           done
           exit $rc
+
+      # The lab end to end: every strategy ranked, the trial ledger written,
+      # and on synthetic ticks no champion -- it must refuse to name one.
+      - name: Lab report
+        shell: bash
+        run: |
+          set -o pipefail
+          ./build/${{ matrix.preset }}/bin/lab data/ticks/XAUUSD XAUUSD --out lab-out 2>&1 | tee lab.log
+          grep -aE "^(ranking|trials|champion)" lab.log | while IFS= read -r line; do
+            clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g')
+            echo "::notice::lab: ${clean}"
+          done
+          test -s lab-out/leaderboard_XAUUSD.csv
+          tr -d '\r' < lab-out/champion_XAUUSD.txt | grep -qx 'name=' || {
+            echo "::error::lab named a champion on synthetic data"; exit 1; }
+
+      # The folder people put on their desktop: the tested binaries, the EA,
+      # the guides and the one-click scripts in desktop/. Assembled once; the
+      # scripts then run on a COPY against a stand-in MetaTrader data folder,
+      # so what ships has been executed on Windows, not only written for it.
+      # Packaged only after the unit tests -- the parity test among them --
+      # have passed on this exact build.
+      - name: Assemble desktop folder
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pkg=package/ARmedias-Quantum
+          rm -rf package
+          mkdir -p "$pkg/bin" "$pkg/mt5" "$pkg/docs" "$pkg/strategies" "$pkg/python/xau_ingest"
+          cp build/msvc-release/bin/xaubridge.dll build/msvc-release/bin/lab.exe "$pkg/bin/"
+          cp desktop/* "$pkg/"
+          cp mt5/XauBridgeEA.mq5 mt5/README.md "$pkg/mt5/"
+          cp docs/CUSTOM-STRATEGIES.md "$pkg/docs/"
+          cp cpp/strategies/custom/*.cpp "$pkg/strategies/"
+          cp python/xau_ingest/*.py "$pkg/python/xau_ingest/"
+          find package -type f | sort
+
+      - name: Desktop folder smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $t = Join-Path $env:RUNNER_TEMP 'desk'
+          Copy-Item -Recurse package\ARmedias-Quantum $t
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'appdata'
+          $term = Join-Path $env:APPDATA 'MetaQuotes\Terminal\TESTTERMINAL'
+          New-Item -ItemType Directory -Force (Join-Path $term 'MQL5\Experts') | Out-Null
+          Push-Location $t
+
+          cmd /c "1-INSTALL-INTO-MT5.bat quiet"
+          if ($LASTEXITCODE -ne 0) { throw "1-INSTALL exited $LASTEXITCODE" }
+          foreach ($f in 'MQL5\Libraries\xaubridge.dll', 'MQL5\Experts\XauBridgeEA.mq5') {
+            if (-not (Test-Path (Join-Path $term $f))) { throw "1-INSTALL did not install $f" }
+          }
+          if ((Get-Content mt5-folder.txt) -ne $term) { throw "mt5-folder.txt: $(Get-Content mt5-folder.txt)" }
+
+          New-Item -ItemType Directory -Force data\ticks | Out-Null
+          Copy-Item -Recurse (Join-Path $env:GITHUB_WORKSPACE 'data\ticks\XAUUSD') data\ticks\XAUUSD
+          cmd /c "2-RANK-STRATEGIES.bat quiet"
+          if ($LASTEXITCODE -ne 0) { throw "2-RANK exited $LASTEXITCODE" }
+          if (-not (Test-Path lab\leaderboard_XAUUSD.csv)) { throw "2-RANK wrote no leaderboard" }
+          $champ = Join-Path $term 'MQL5\Files\xau_champion.txt'
+          if (-not (Select-String -Path $champ -Pattern '^name=$' -Quiet)) { throw "champion named on synthetic data" }
+
+          # A journal as the EA writes it: 45 closed positions, two in three won.
+          $lines = @('close_utc_ms,position,strategy,magic,side,lots,net,balance_before')
+          for ($i = 1; $i -le 45; $i++) {
+            $net = if ($i % 3 -eq 0) { '-20.00' } else { '45.00' }
+            $lines += "$(1730000000000 + $i * 3600000),$i,DonchianTrend,990101,1,0.10,$net,10000.00"
+          }
+          Set-Content -Path (Join-Path $term 'MQL5\Files\xau_trades_XAUUSD_1.csv') -Value $lines -Encoding ascii
+          cmd /c "3-UPDATE-FROM-LIVE.bat quiet"
+          if ($LASTEXITCODE -ne 0) { throw "3-UPDATE exited $LASTEXITCODE" }
+          Get-Content lab\live-update.log
+          if (-not (Select-String -Path $champ -Pattern '^name=DonchianTrend$' -Quiet)) {
+            throw "3-UPDATE did not promote the proven strategy: $(Get-Content $champ -Raw)"
+          }
+
+          cmd /c "4-SCHEDULE-DAILY-UPDATE.bat quiet"
+          if ($LASTEXITCODE -ne 0) { throw "4-SCHEDULE exited $LASTEXITCODE" }
+          $q = schtasks /Query /TN "ARmedias Quantum live update" /V /FO LIST | Out-String
+          if ($q -notmatch [regex]::Escape("$t\3-UPDATE-FROM-LIVE.bat")) { throw "scheduled task runs the wrong thing: $q" }
+          cmd /c "5-REMOVE-SCHEDULE.bat quiet"
+          if ($LASTEXITCODE -ne 0) { throw "5-REMOVE exited $LASTEXITCODE" }
+          Pop-Location
+
+      # The download: unzip it onto the desktop and follow START-HERE.txt.
+      - name: Publish desktop folder
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARmedias-Quantum
+          if-no-files-found: error
+          path: package/
 
       # The bindings must agree with the C++ suite figure for figure. Copying
       # the module next to the tests avoids PYTHONPATH separator differences

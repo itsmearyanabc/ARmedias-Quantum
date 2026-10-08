@@ -1,0 +1,57 @@
+ARmedias Quantum
+================
+
+This folder is everything needed on a Windows PC with MetaTrader 5.
+Put it anywhere (the Desktop is fine) and keep it in one piece.
+
+  bin\          xaubridge.dll (the trading engine MetaTrader loads) and lab.exe
+  mt5\          XauBridgeEA.mq5 (the MetaTrader expert) and its manual
+  docs\         CUSTOM-STRATEGIES.md: adding strategies, the lab, live learning
+  strategies\   the example strategy, a template for new ones
+  python\       the price-history downloader
+
+Double-click, in order
+----------------------
+
+0-DOWNLOAD-DATA.bat
+    Downloads gold price history. Needs Python 3 (python.org; tick
+    "Add python.exe to PATH" when installing). Ten years takes an hour or more.
+
+1-INSTALL-INTO-MT5.bat
+    Copies the engine and the expert into MetaTrader 5 and compiles the
+    expert. If it says the expert did not compile, send the error lines to
+    Claude. Close MetaTrader 5 before running it.
+
+    Then, in MetaTrader 5:
+      - Tools > Options > Expert Advisors: tick "Allow DLL imports"
+      - open a gold chart on a DEMO account, drag XauBridgeEA onto it
+      - InpStrategy = @champion  (trade whatever the lab picks)
+      - InpDryRun   = true       (watch it first; set false to trade on demo)
+
+2-RANK-STRATEGIES.bat
+    Tests every strategy on the history with real costs and names a champion,
+    or NONE. NONE is the usual answer and it is the right one: the champion has
+    to beat what luck alone produces across every strategy ever tried. The
+    full table opens when it finishes.
+
+3-UPDATE-FROM-LIVE.bat
+    Learns from the trades the expert has actually made: retires probable
+    losers, promotes proven winners (40+ trades), and updates the champion.
+    The expert switches to a new champion only when it holds no position.
+
+4-SCHEDULE-DAILY-UPDATE.bat
+    Runs step 3 every day at 23:30 by itself. 5-REMOVE-SCHEDULE.bat undoes it.
+
+Safety
+------
+  - The expert refuses a REAL account unless InpAllowRealAccount is set.
+    Do not set it before six weeks and 40+ trades on demo.
+  - It halts and closes everything at a 4% daily loss or 8% drawdown, on the
+    HALT button, or when MQL5\Files\XAU_STOP.txt exists. Only a person resumes.
+  - No strategy here has yet passed its validation on real data.
+
+Adding strategies
+-----------------
+See docs\CUSTOM-STRATEGIES.md. A new strategy is one file, added to the
+project on GitHub; the next green CI run produces a new copy of this folder
+with it inside.

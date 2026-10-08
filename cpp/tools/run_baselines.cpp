@@ -11,6 +11,8 @@
 // measures the cost model, not an edge.
 //
 //   run_baselines [dir] [symbol] [--fold-days N] [--lots X] [--require-gate]
+//                 [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+//                 [--swap-long R] [--swap-short R]
 
 #include "xau/engine.hpp"
 #include "xau/registry.hpp"
@@ -43,22 +45,6 @@ constexpr double kGatePf = 1.05;
 // counts; a backtest gate has no business being more permissive than that.
 constexpr int kGateMinTrades = 100;
 
-// Samples tick flags. The synthetic generator stamps TF_SYNTHETIC on every
-// tick it writes, which is the only reliable way to tell a store apart from
-// real history after the fact.
-bool looks_synthetic(const TickStore& s) {
-    for (const TickFile& f : s.files()) {
-        const std::span<const Tick> t = f.ticks();
-        if (t.empty()) continue;
-        const std::size_t n = std::min<std::size_t>(t.size(), 1000);
-        for (std::size_t i = 0; i < n; ++i) {
-            if (t[i].flags & TF_SYNTHETIC) return true;
-        }
-        return false;
-    }
-    return false;
-}
-
 std::string ymd(TimeUs us) {
     const std::time_t tt = static_cast<std::time_t>(us / 1'000'000);
     std::tm tm{};
@@ -76,9 +62,11 @@ std::string ymd(TimeUs us) {
 // At 0 it is a frictionless run, which is the only way to separate "this signal
 // has no edge" from "this signal has an edge that costs eat". Those two look
 // identical in a net-P&L column and call for completely different responses.
-BacktestConfig base_config(Timeframe tf, double cost_mult, const std::string& symbol) {
+BacktestConfig base_config(Timeframe tf, double cost_mult, const std::string& symbol,
+                           const Financing& fin) {
     BacktestConfig c;
     c.spec = SymbolSpec::for_symbol(symbol);
+    apply_financing(c.spec, fin, cost_mult);
     c.tf = tf;
     c.initial_balance = 10'000.0;
     // Costs a retail gold account actually sees. Spread always comes from the
@@ -108,6 +96,9 @@ int main(int argc, char** argv) {
     // bigger move. That is a sweep, not a constant.
     Timeframe   tf = Timeframe::M15;
     double      cost_mult = 1.0;
+    Financing   fin;
+    TimeUs      from_us = 0;
+    TimeUs      to_us = 0;
 
     int positional = 0;
     for (int i = 1; i < argc; ++i) {
@@ -117,23 +108,24 @@ int main(int argc, char** argv) {
         } else if (a == "--lots" && i + 1 < argc) {
             lots = std::atof(argv[++i]);
         } else if (a == "--tf" && i + 1 < argc) {
-            const std::string want = argv[++i];
-            bool              found = false;
-            for (int k = 0; k < static_cast<int>(Timeframe::COUNT); ++k) {
-                const auto cand = static_cast<Timeframe>(k);
-                if (want == timeframe_name(cand)) {
-                    tf = cand;
-                    found = true;
-                }
-            }
-            if (!found) {
-                std::fprintf(stderr, "unknown timeframe: %s\n", want.c_str());
+            if (!parse_timeframe(argv[++i], tf)) {
+                std::fprintf(stderr, "unknown timeframe: %s\n", argv[i]);
                 return 2;
             }
         } else if (a == "--cost-mult" && i + 1 < argc) {
             cost_mult = std::atof(argv[++i]);
         } else if (a == "--require-gate") {
             require_gate = true;
+        } else if (a == "--swap-long" && i + 1 < argc) {
+            fin.long_annual = std::atof(argv[++i]);
+        } else if (a == "--swap-short" && i + 1 < argc) {
+            fin.short_annual = std::atof(argv[++i]);
+        } else if ((a == "--from" || a == "--to") && i + 1 < argc) {
+            if (!parse_utc_date(argv[++i], a == "--from" ? from_us : to_us)) {
+                std::fprintf(stderr, "bad date for %s: %s (want YYYY-MM-DD)\n", a.c_str(),
+                             argv[i]);
+                return 2;
+            }
         } else if (!a.empty() && a[0] != '-') {
             if (positional == 0) dir = a;
             else if (positional == 1) symbol = a;
@@ -149,6 +141,11 @@ int main(int argc, char** argv) {
         std::printf("span     %s .. %s   %llu ticks\n", ymd(store.first_ts()).c_str(),
                     ymd(store.last_ts()).c_str(),
                     static_cast<unsigned long long>(store.total_ticks()));
+        std::printf("window   %s .. %s (end exclusive)\n",
+                    ymd(from_us ? from_us : store.first_ts()).c_str(),
+                    to_us ? ymd(to_us).c_str() : "end of store");
+        std::printf("swap     long %+.2f%%  short %+.2f%% a year on notional, x%.1f at 2x\n",
+                    fin.long_annual * 100.0, fin.short_annual * 100.0, 2.0);
         std::printf("folds    %d-day walk-forward, non-overlapping   bars %s\n\n", fold_days,
                     timeframe_name(tf));
 
@@ -171,10 +168,16 @@ int main(int argc, char** argv) {
         wf.test_span_us = static_cast<TimeUs>(fold_days) * kUsPerDay;
         wf.min_trades_per_fold = 1;
 
-        const BacktestConfig cfg = base_config(tf, cost_mult, symbol);
+        const BacktestConfig cfg = [&] {
+            BacktestConfig c = base_config(tf, cost_mult, symbol, fin);
+            c.from_us = from_us;
+            c.to_us = to_us;
+            return c;
+        }();
         const BacktestConfig cfg2x = [&] {
             BacktestConfig c = cfg;
             c.costs = c.costs.stressed(2.0);
+            apply_financing(c.spec, fin, cost_mult * 2.0);
             return c;
         }();
 
