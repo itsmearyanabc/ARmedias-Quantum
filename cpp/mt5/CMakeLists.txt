@@ -5,7 +5,10 @@
 # whose tested build differs from its deployed build is untested.
 add_library(xaumt5 STATIC src/bridge.cpp)
 target_include_directories(xaumt5 PUBLIC include)
-target_link_libraries(xaumt5 PRIVATE xau_flags)
+# xau::core is what makes the bridge trade the tested strategy: LiveSession,
+# the registry and the risk layer. It has no dependencies of its own, which is
+# why it can go inside a DLL that MetaTrader loads.
+target_link_libraries(xaumt5 PRIVATE xau::core xau_flags)
 # PUBLIC: anything linking the static lib must see the same declspec
 # decision the library was compiled with, or it asks for __imp_ symbols.
 target_compile_definitions(xaumt5 PUBLIC XAU_BRIDGE_STATIC=1)
@@ -13,6 +16,6 @@ target_compile_definitions(xaumt5 PUBLIC XAU_BRIDGE_STATIC=1)
 if(WIN32)
     add_library(xaumt5dll SHARED src/bridge.cpp)
     target_include_directories(xaumt5dll PUBLIC include)
-    target_link_libraries(xaumt5dll PRIVATE xau_flags)
+    target_link_libraries(xaumt5dll PRIVATE xau::core xau_flags)
     set_target_properties(xaumt5dll PROPERTIES OUTPUT_NAME "xaubridge")
 endif()
