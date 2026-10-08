@@ -86,6 +86,31 @@ jobs:
               done
           exit 1
 
+      # The shipped DLL itself: it must load, export the ABI, and need no
+      # Visual C++ runtime (MetaTrader machines often lack one). dumpbin lists
+      # what the loader will look for; ctypes loads it and calls in.
+      - name: Check MT5 bridge DLL
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          dll=build/msvc-release/bin/xaubridge.dll
+          deps=$(dumpbin //nologo //dependents "$dll" | tr -d '\r')
+          printf '%s\n' "$deps"
+          if printf '%s\n' "$deps" | grep -aiE 'vcruntime|msvcp|api-ms-win-crt|ucrtbase'; then
+            echo "::error::xaubridge.dll depends on the Visual C++ runtime"
+            exit 1
+          fi
+          python - "$dll" <<'PY'
+          import ctypes, sys
+          d = ctypes.WinDLL(sys.argv[1])
+          v = d.xau_abi_version()
+          sizes = [d.xau_struct_size(i) for i in range(5)]
+          print("abi", v, "sizes", sizes)
+          if v != 3 or sizes != [128, 112, 576, 128, 56]:
+              print("::error::xaubridge.dll ABI", v, sizes)
+              sys.exit(1)
+          PY
+
       # The MT5 bridge, packaged only after the unit tests -- the parity test
       # among them -- have passed on this exact build. Download it from the
       # run's Artifacts; see mt5/README.md for the install.

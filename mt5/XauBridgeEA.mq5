@@ -18,13 +18,13 @@
 //| plan's next step is six weeks on a demo account, not real money.  |
 //+------------------------------------------------------------------+
 #property copyright "ARmedias Quantum"
-#property version   "2.00"
+#property version   "3.00"
 #property description "Runs the ARmedias Quantum engine (xaubridge.dll) on this chart."
 
 #include <Trade\Trade.mqh>
 
 //--- must match XAU_BRIDGE_ABI_VERSION in xau_bridge.h
-#define XAU_ABI_EXPECTED 2
+#define XAU_ABI_EXPECTED 3
 
 //--- xau_action
 #define ACT_NONE              0
@@ -54,12 +54,13 @@ struct XauMarket
    double            pos_sl;
    double            pos_tp;
    double            gross_lots;
+   double            value_per_price_lot;   // account currency per 1.0 of price, per lot
    int               pos_side;
    int               own_positions;
    int               foreign_positions;
    int               server_day;
    int               session_open;
-   int               reserved;
+   int               own_orders;            // working orders of ours, not yet filled
   };
 
 struct XauDecision
@@ -67,6 +68,8 @@ struct XauDecision
    double            lots;
    double            sl_price;
    double            tp_price;
+   double            sl_dist;               // the same stop/target as distances from the
+   double            tp_dist;               // fill, so they can be re-placed on it
    int               action;
    int               halt_reason;
    uchar             reason[64];
@@ -333,6 +336,71 @@ void FillPositions(XauMarket &m)
      }
   }
 //+------------------------------------------------------------------+
+//| Working (unfilled) orders of ours. A second entry beside one that  |
+//| could still fill would be a double position.                       |
+//+------------------------------------------------------------------+
+void FillOrders(XauMarket &m)
+  {
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagic)
+         m.own_orders++;
+     }
+  }
+//+------------------------------------------------------------------+
+//| What a 1.0 move in price is worth per lot, in the ACCOUNT's        |
+//| currency. Contract size alone is USD per lot; on a EUR or GBP      |
+//| account that would size every trade wrong by the exchange rate.    |
+//| The larger of the two tick values: sizing errs smaller, not larger.|
+//+------------------------------------------------------------------+
+double ValuePerPriceLot()
+  {
+   double size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double v    = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE_LOSS),
+                         SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE));
+   if(size <= 0.0 || v <= 0.0)
+      return(0.0);   // the bridge then refuses risk-sized entries
+   return(v / size);
+  }
+//+------------------------------------------------------------------+
+ulong OwnPositionTicket()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket != 0 && PositionGetString(POSITION_SYMBOL) == _Symbol &&
+         PositionGetInteger(POSITION_MAGIC) == InpMagic)
+         return(ticket);
+     }
+   return(0);
+  }
+//+------------------------------------------------------------------+
+//| Delete our working orders on the symbol. Part of every flatten: a  |
+//| placed order that fills after a halt is a position nobody wanted.  |
+//+------------------------------------------------------------------+
+void DeleteOwnOrders()
+  {
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol || OrderGetInteger(ORDER_MAGIC) != InpMagic)
+         continue;
+      if(InpDryRun)
+        {
+         PrintFormat("DRY RUN would delete order #%I64u", ticket);
+         continue;
+        }
+      if(!g_trade.OrderDelete(ticket))
+         PrintFormat("delete order #%I64u FAILED retcode=%u %s", ticket, g_trade.ResultRetcode(),
+                     g_trade.ResultRetcodeDescription());
+     }
+  }
+//+------------------------------------------------------------------+
 //| Close positions on the symbol: ours only, or everything.          |
 //+------------------------------------------------------------------+
 bool ClosePositions(const bool everything)
@@ -363,6 +431,32 @@ bool ClosePositions(const bool everything)
    return(all_ok);
   }
 //+------------------------------------------------------------------+
+//| The stop and target went out priced off the quote. The backtest    |
+//| measures them from the fill, so after slippage they are moved onto |
+//| it: a stop left at quote - distance loses the slippage on top of   |
+//| the tested risk. If the move is refused the original ones stand.   |
+//+------------------------------------------------------------------+
+void Reanchor(const bool buy, const double fill, const double sl_dist, const double tp_dist,
+              const double sl_sent, const double tp_sent)
+  {
+   double sgn = buy ? 1.0 : -1.0;
+   double sl  = (sl_dist > 0.0) ? NormalizeDouble(fill - sgn * sl_dist, _Digits) : sl_sent;
+   double tp  = (tp_dist > 0.0) ? NormalizeDouble(fill + sgn * tp_dist, _Digits) : tp_sent;
+   if(MathAbs(sl - sl_sent) < _Point / 2 && MathAbs(tp - tp_sent) < _Point / 2)
+      return;   // no slippage: already where they belong
+   ulong ticket = OwnPositionTicket();
+   if(ticket == 0)
+     {
+      Print("re-anchor: position not visible yet; the stops sent with the order stand");
+      return;
+     }
+   if(g_trade.PositionModify(ticket, sl, tp))
+      PrintFormat("re-anchored on the fill %.5f: sl %.5f tp %.5f", fill, sl, tp);
+   else
+      PrintFormat("re-anchor FAILED (retcode %u %s); sl %.5f tp %.5f from the order stand",
+                  g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription(), sl_sent, tp_sent);
+  }
+//+------------------------------------------------------------------+
 //| Carry out a decision, and always tell the bridge what happened:   |
 //| it sends nothing new until it hears.                              |
 //+------------------------------------------------------------------+
@@ -378,6 +472,7 @@ void Execute(const XauDecision &d)
             PrintFormat("HALT (%d): %s -- flattening %s", d.halt_reason,
                         FixedToString(d.reason), _Symbol);
            }
+         DeleteOwnOrders();
          ClosePositions(true);
          return;
         }
@@ -408,13 +503,18 @@ void Execute(const XauDecision &d)
          //--- protection even if this terminal, this EA or the DLL goes away.
          bool sent = buy ? g_trade.Buy(lots, _Symbol, 0.0, sl, tp, why)
                          : g_trade.Sell(lots, _Symbol, 0.0, sl, tp, why);
-         uint rc   = g_trade.ResultRetcode();
-         bool filled = sent && (rc == TRADE_RETCODE_DONE || rc == TRADE_RETCODE_DONE_PARTIAL ||
-                                rc == TRADE_RETCODE_PLACED);
+         uint   rc     = g_trade.ResultRetcode();
+         bool   filled = sent && (rc == TRADE_RETCODE_DONE || rc == TRADE_RETCODE_DONE_PARTIAL);
+         //--- PLACED: accepted, not yet filled. Reported as ok; the bridge then
+         //--- watches it as a working order until it fills or is cancelled.
+         bool   placed = sent && rc == TRADE_RETCODE_PLACED;
+         double fill   = g_trade.ResultPrice();
          PrintFormat("%s %.2f lots sl %.5f tp %.5f -> %s (retcode %u %s)", (buy ? "BUY" : "SELL"),
-                     lots, sl, tp, (filled ? "FILLED" : "FAILED"), rc,
+                     lots, sl, tp, (filled ? "FILLED" : placed ? "PLACED" : "FAILED"), rc,
                      g_trade.ResultRetcodeDescription());
-         xau_order_result(g_ctx, filled ? 1 : 0, (int)rc, g_trade.ResultPrice(),
+         if(filled && fill > 0.0)
+            Reanchor(buy, fill, d.sl_dist, d.tp_dist, sl, tp);
+         xau_order_result(g_ctx, (filled || placed) ? 1 : 0, (int)rc, fill,
                           g_trade.ResultVolume());
          return;
         }
@@ -536,7 +636,10 @@ int OnInit()
    lim.max_quote_age_ms    = InpMaxQuoteAgeSec * 1000;
    lim.pending_timeout_ms  = 30000;
    CopyToFixed((InpKillFile == "") ? "" : FilesPath(InpKillFile), lim.kill_file, 260);
-   CopyToFixed(FilesPath(StringFormat("xau_state_%s_%d.txt", _Symbol, InpMagic)),
+   //--- Keyed by account too: the same symbol and magic on a second login is a
+   //--- different account with its own day and peak.
+   CopyToFixed(FilesPath(StringFormat("xau_state_%s_%I64d_%d.txt", _Symbol,
+                                      AccountInfoInteger(ACCOUNT_LOGIN), InpMagic)),
                lim.state_file, 260);
 
    uchar sym[];
@@ -545,7 +648,8 @@ int OnInit()
    g_ctx = xau_create(sym, XAU_ABI_EXPECTED, lim);
    if(g_ctx == 0)
      {
-      Print("xau_create failed");
+      Print("xau_create failed. Most likely another chart already runs this EA on ", _Symbol,
+            " with magic ", InpMagic, ": give each chart its own InpMagic.");
       return(INIT_FAILED);
      }
    LogBridge();
@@ -629,7 +733,9 @@ void OnTick()
    m.balance      = AccountInfoDouble(ACCOUNT_BALANCE);
    m.server_day   = ServerDay();
    m.session_open = SessionOpen() ? 1 : 0;
+   m.value_per_price_lot = ValuePerPriceLot();
    FillPositions(m);
+   FillOrders(m);
 
    XauDecision d;
    ZeroMemory(d);
@@ -667,6 +773,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
      {
       xau_halt(g_ctx, HALT_MANUAL);
       Print("HALT pressed: flattening ", _Symbol);
+      DeleteOwnOrders();
       ClosePositions(true);
       ObjectSetInteger(0, BTN_HALT, OBJPROP_STATE, false);
      }
@@ -684,7 +791,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             Print("RESUMED by the operator");
            }
          else
-            Print("resume refused (is the kill file still there?)");
+            Print("resume refused; the reason follows");
         }
      }
    LogBridge();

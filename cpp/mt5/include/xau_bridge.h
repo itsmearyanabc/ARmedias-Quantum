@@ -25,7 +25,9 @@
  *
  * Threading: one context per symbol, single-threaded. MT5 calls OnTick and
  * OnTimer from one thread; nothing here is safe to call concurrently on the
- * same context.
+ * same context. Contexts on different threads (one per EA) are independent:
+ * the only state they share is the registry of state files in use, which is
+ * locked.
  */
 
 #ifndef XAU_BRIDGE_H
@@ -60,7 +62,7 @@ extern "C" {
 /* Bump on ANY change to a struct below or to a function signature. The EA
  * checks this on init and refuses to run on a mismatch. Silently running a new
  * DLL against an old EA is how a "lots" field becomes a "price" field. */
-#define XAU_BRIDGE_ABI_VERSION 2
+#define XAU_BRIDGE_ABI_VERSION 3
 
 typedef enum {
     XAU_ACTION_NONE  = 0,
@@ -102,7 +104,7 @@ typedef enum {
     XAU_TF_H1 = 4, XAU_TF_H4 = 5, XAU_TF_D1 = 6
 } xau_timeframe;
 
-/* Market and account state, pushed in by the EA on every tick. 120 bytes.
+/* Market and account state, pushed in by the EA on every tick. 128 bytes.
  *
  * "Ours" means positions carrying this EA's magic number on this symbol.
  * Everything else on the symbol is foreign: a manual trade or another EA,
@@ -120,19 +122,27 @@ typedef struct {
     double  pos_sl;             /* 0 = none                                     */
     double  pos_tp;             /* 0 = none                                     */
     double  gross_lots;         /* |volume| of EVERY position on the symbol      */
+    double  value_per_price_lot;/* ACCOUNT currency per 1.0 move in price, per lot
+                                   (tick value / tick size, loss side). Sizing by
+                                   risk needs it: 0 refuses risk-sized entries   */
     int32_t pos_side;           /* 0 flat, 1 long, -1 short                     */
     int32_t own_positions;
     int32_t foreign_positions;
     int32_t server_day;         /* broker trading day as yyyymmdd               */
     int32_t session_open;       /* 1 when the broker's trade session is open     */
-    int32_t reserved;           /* keeps the size a multiple of 8; set to 0      */
+    int32_t own_orders;         /* working (unfilled) orders of ours            */
 } xau_market;
 
-/* What the EA should do. 96 bytes. */
+/* What the EA should do. 112 bytes. */
 typedef struct {
     double  lots;
     double  sl_price;           /* 0 = none                                     */
     double  tp_price;           /* 0 = none                                     */
+    /* The same stop and target as distances from the fill, price units. After a
+     * fill the EA re-anchors SL/TP to the actual fill price, as the backtest
+     * does, so slippage does not widen the loss at the stop. 0 = none. */
+    double  sl_dist;
+    double  tp_dist;
     int32_t action;             /* xau_action                                   */
     int32_t halt_reason;        /* xau_halt_reason, when halting or refusing     */
     /* Fixed buffer, not a pointer: the caller owns no memory and there is
@@ -159,7 +169,7 @@ typedef struct {
     char    kill_file[260];
     /* Where halts and the daily anchors persist, so restarting MetaTrader does
      * not clear a halt or hand back a fresh daily-loss allowance. Empty: no
-     * persistence (tests only). */
+     * persistence (tests only). Both paths are UTF-8. */
     char    state_file[260];
 } xau_limits;
 
@@ -205,7 +215,9 @@ XAU_API int32_t XAU_CALL xau_struct_size(int32_t which);   /* 0 market, 1 decisi
                                                               config, 4 rate */
 
 /* Create a trading context. Returns NULL on failure. symbol is copied.
- * Loads the state file: a persisted halt survives, an unreadable file halts. */
+ * Loads the state file: a persisted halt survives, an unreadable file halts.
+ * NULL also when another live context already uses the same state file: two
+ * EAs sharing one file would overwrite each other's halts. */
 XAU_API void* XAU_CALL xau_create(const char* symbol, int32_t abi_version,
                                   const xau_limits* limits);
 
@@ -236,7 +248,10 @@ XAU_API int32_t XAU_CALL xau_on_timer(void* ctx, int64_t now_ms, xau_decision* o
 
 /* Report what happened to the last BUY, SELL or CLOSE. Until this arrives the
  * bridge sends nothing new, so one decision can never become two orders. A
- * failed order is not retried: the bar that produced it has passed. */
+ * failed ENTRY is not retried: the bar that produced it has passed. A failed
+ * CLOSE is retried on the next ticks, and halts and flattens if it cannot get
+ * through: an exit the strategy asked for is never silently dropped.
+ * ok = 1 for TRADE_RETCODE_PLACED too: the order then shows in own_orders. */
 XAU_API int32_t XAU_CALL xau_order_result(void* ctx, int32_t ok, int32_t retcode,
                                           double fill_price, double lots);
 
@@ -247,7 +262,8 @@ XAU_API int32_t XAU_CALL xau_halt(void* ctx, int32_t reason);
 
 /* Clear a halt. Deliberately separate from xau_halt and never automatic: a
  * system that re-arms itself after hitting a loss limit does not have a loss
- * limit. Refused while the kill file exists. */
+ * limit. Refused while the kill file exists, and after a STATE_FILE halt while
+ * the file still cannot be read (fix or delete it first). */
 XAU_API int32_t XAU_CALL xau_resume(void* ctx);
 
 XAU_API int32_t XAU_CALL xau_is_halted(void* ctx);

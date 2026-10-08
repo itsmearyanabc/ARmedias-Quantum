@@ -22,7 +22,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -112,11 +114,11 @@ void arm_buy_and_hold(void* ctx, double lots = 0.05) {
 
 XAU_TEST(abi_version_and_struct_sizes_are_exposed_and_enforced) {
     CHECK_EQ(xau_abi_version(), XAU_BRIDGE_ABI_VERSION);
-    CHECK_EQ(XAU_BRIDGE_ABI_VERSION, 2);
+    CHECK_EQ(XAU_BRIDGE_ABI_VERSION, 3);
     // The EA compares these against its own sizeof. Every size is a multiple
     // of 8 so MQL5's 1-byte packing and C's natural alignment agree.
-    CHECK_EQ(xau_struct_size(0), 120);
-    CHECK_EQ(xau_struct_size(1), 96);
+    CHECK_EQ(xau_struct_size(0), 128);
+    CHECK_EQ(xau_struct_size(1), 112);
     CHECK_EQ(xau_struct_size(2), 576);
     CHECK_EQ(xau_struct_size(3), 128);
     CHECK_EQ(xau_struct_size(4), 56);
@@ -391,6 +393,123 @@ XAU_TEST(an_unreadable_state_file_starts_halted) {
     }
 }
 
+XAU_TEST(two_live_contexts_cannot_share_a_state_file) {
+    // Two EAs with the same symbol and magic would overwrite each other's
+    // halts and anchors. The second is refused while the first lives.
+    fixture::TempDir dir;
+    xau_limits       l = default_limits();
+    set_path(l.state_file, (dir.path() / "state.txt").string());
+    {
+        Ctx a(l);
+        REQUIRE(a.p != nullptr);
+        Ctx b(l);
+        CHECK(b.p == nullptr);
+        xau_limits other = l;
+        set_path(other.state_file, (dir.path() / "other.txt").string());
+        Ctx d(other);
+        CHECK(d.p != nullptr);
+    }
+    Ctx again(l);                         // released by the first one's destroy
+    CHECK(again.p != nullptr);
+}
+
+XAU_TEST(a_failed_state_write_is_retried_until_it_lands) {
+    fixture::TempDir dir;
+    const auto       sub = dir.path() / "missing";
+    const auto       path = sub / "state.txt";
+    xau_limits       l = default_limits();
+    set_path(l.state_file, path.string());
+    {
+        Ctx        c(l);
+        xau_market m = healthy_market();
+        tick(c.p, m);
+        m.equity = 9'500.0;               // daily loss: halts, and the write fails
+        tick(c.p, m);
+        CHECK_EQ(xau_is_halted(c.p), 1);
+        CHECK(!std::filesystem::exists(path));
+        char buf[1024];
+        xau_status_text(c.p, buf, sizeof(buf));
+        CHECK(std::string(buf).find("NOT persisted") != std::string::npos);
+
+        std::filesystem::create_directories(sub);   // the disk comes back
+        xau_decision d{};
+        CHECK_EQ(xau_on_timer(c.p, m.now_ms + 1'500, &d), XAU_OK);
+        CHECK(std::filesystem::exists(path));
+    }
+    Ctx c(l);                             // v2 never retried: this came back armed
+    CHECK_EQ(xau_is_halted(c.p), 1);
+}
+
+XAU_TEST(resume_after_an_unreadable_state_file_rereads_it) {
+    fixture::TempDir dir;
+    const auto       path = dir.path() / "state.txt";
+    xau_limits       l = default_limits();
+    set_path(l.state_file, path.string());
+    std::ofstream(path, std::ios::trunc) << "garbage\n";
+    const auto read_all = [&] {
+        std::ifstream f(path);
+        return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    };
+
+    Ctx c(l);
+    REQUIRE(xau_is_halted(c.p) == 1);
+    // Still unreadable: refused. And neither a manual halt nor a resume
+    // attempt overwrites the file holding the anchors.
+    CHECK_EQ(xau_halt(c.p, XAU_HALT_MANUAL), XAU_OK);
+    CHECK_EQ(xau_resume(c.p), XAU_ERR_REFUSED);
+    CHECK_EQ(read_all(), std::string("garbage\n"));
+
+    // Repaired by the operator: its anchors are adopted, not zeroed. v2
+    // resumed on zero anchors, handing back the day's spent allowance.
+    std::ofstream(path, std::ios::trunc)
+        << "xau_bridge_state 1\nhalted=0\nhalt_reason=0\nhalt_message=\nday=20240101\n"
+           "day_start_equity=10000\npeak_equity=10000\n";
+    CHECK_EQ(xau_resume(c.p), XAU_OK);
+    xau_market m = healthy_market();
+    m.equity = 9'590.0;                   // -4.1% from the repaired anchor
+    CHECK_EQ(tick(c.p, m).halt_reason, static_cast<int32_t>(XAU_HALT_DAILY_LOSS));
+}
+
+XAU_TEST(a_deleted_state_file_resumes_with_fresh_anchors) {
+    fixture::TempDir dir;
+    const auto       path = dir.path() / "state.txt";
+    xau_limits       l = default_limits();
+    set_path(l.state_file, path.string());
+    std::ofstream(path, std::ios::trunc) << "garbage\n";
+    Ctx c(l);
+    REQUIRE(xau_is_halted(c.p) == 1);
+    std::filesystem::remove(path);
+    CHECK_EQ(xau_resume(c.p), XAU_OK);
+    CHECK_EQ(xau_is_halted(c.p), 0);
+    CHECK(std::filesystem::exists(path));
+}
+
+XAU_TEST(state_and_kill_paths_are_utf8) {
+    // MQL5\Files under a user name like "René". Read as the ANSI code page,
+    // these bytes name a different file on Windows and the kill switch never
+    // fires. (On Linux paths are bytes and this passes either way; the
+    // Windows CI run is the one that tests it.)
+    fixture::TempDir dir;
+    const std::string state_u8 = "\xc3\xa9tat.txt", kill_u8 = "ARR\xc3\x8aT";
+    xau_limits        l = default_limits();
+    const std::u8string d8 = (dir.path() / "").u8string();   // with its separator
+    const std::string   base(reinterpret_cast<const char*>(d8.data()), d8.size());
+    set_path(l.state_file, base + state_u8);
+    set_path(l.kill_file, base + kill_u8);
+    const auto state = dir.path() / std::u8string(u8"état.txt");
+    const auto kill = dir.path() / std::u8string(u8"ARRÊT");
+
+    Ctx c(l);
+    REQUIRE(c.p != nullptr);
+    CHECK_EQ(xau_halt(c.p, XAU_HALT_MANUAL), XAU_OK);
+    CHECK(std::filesystem::exists(state));
+    CHECK_EQ(xau_resume(c.p), XAU_OK);
+    std::ofstream(kill) << "stop";
+    xau_decision d{};
+    CHECK_EQ(xau_on_timer(c.p, kT0ms, &d), XAU_OK);
+    CHECK_EQ(d.halt_reason, static_cast<int32_t>(XAU_HALT_KILL_FILE));
+}
+
 // ---------------------------------------------------------------------------
 // the kill file and the timer
 // ---------------------------------------------------------------------------
@@ -561,6 +680,65 @@ XAU_TEST(a_fill_closed_before_it_was_seen_open_is_not_a_drift) {
     CHECK_EQ(xau_is_halted(c.p), 0);
 }
 
+XAU_TEST(a_placed_order_is_waited_for_and_a_working_one_halts_at_the_timeout) {
+    // TRADE_RETCODE_PLACED: accepted, not yet filled. The EA reports it as ok
+    // and the order shows in own_orders until it fills or is cancelled.
+    const auto send_and_place = [](void* ctx) {
+        arm_buy_and_hold(ctx);
+        tick(ctx, healthy_market(kT0ms + 5'000));
+        REQUIRE(tick(ctx, healthy_market(kT0ms + kMinMs + 5'000)).action == XAU_ACTION_BUY);
+        CHECK_EQ(xau_order_result(ctx, 1, 10008, 0.0, 0.05), XAU_OK);
+    };
+    {
+        Ctx c(default_limits());
+        send_and_place(c.p);
+        xau_market m = healthy_market(kT0ms + kMinMs + 20'000);
+        m.own_orders = 1;
+        CHECK_EQ(tick(c.p, m).action, static_cast<int32_t>(XAU_ACTION_NONE));
+        m = healthy_market(kT0ms + kMinMs + 40'000);   // past the 30 s timeout
+        m.own_orders = 1;
+        const xau_decision d = tick(c.p, m);
+        CHECK_EQ(d.action, static_cast<int32_t>(XAU_ACTION_FLATTEN_AND_HALT));
+        CHECK_EQ(d.halt_reason, static_cast<int32_t>(XAU_HALT_RECONCILE_DRIFT));
+    }
+    {
+        // Cancelled by the broker: nothing open, nothing working. Understood.
+        Ctx c(default_limits());
+        send_and_place(c.p);
+        const xau_decision d = tick(c.p, healthy_market(kT0ms + kMinMs + 40'000));
+        CHECK_EQ(d.action, static_cast<int32_t>(XAU_ACTION_NONE));
+        CHECK_EQ(xau_is_halted(c.p), 0);
+    }
+}
+
+XAU_TEST(no_entry_while_an_order_of_ours_is_working) {
+    Ctx c(default_limits());
+    arm_buy_and_hold(c.p);
+    tick(c.p, healthy_market(kT0ms + 5'000));
+    xau_market m = healthy_market(kT0ms + kMinMs + 5'000);
+    m.own_orders = 1;
+    const xau_decision d = tick(c.p, m);
+    CHECK_EQ(d.action, static_cast<int32_t>(XAU_ACTION_NONE));
+    CHECK(message(c.p).find("still working") != std::string::npos);
+}
+
+XAU_TEST(a_backward_clock_step_does_not_blind_the_kill_file) {
+    fixture::TempDir dir;
+    const auto       kill = dir.path() / "STOP";
+    xau_limits       l = default_limits();
+    set_path(l.kill_file, kill.string());
+    Ctx          c(l);
+    xau_decision d{};
+    CHECK_EQ(xau_on_timer(c.p, kT0ms, &d), XAU_OK);
+    CHECK_EQ(d.action, static_cast<int32_t>(XAU_ACTION_NONE));
+    std::ofstream(kill) << "stop";
+    // The PC clock is corrected an hour back. v2 compared now - last < 1000,
+    // which a negative difference always passes: no check for an hour.
+    CHECK_EQ(xau_on_timer(c.p, kT0ms - 3'600'000, &d), XAU_OK);
+    CHECK_EQ(d.action, static_cast<int32_t>(XAU_ACTION_FLATTEN_AND_HALT));
+    CHECK_EQ(d.halt_reason, static_cast<int32_t>(XAU_HALT_KILL_FILE));
+}
+
 // ---------------------------------------------------------------------------
 // arming and warm-up
 // ---------------------------------------------------------------------------
@@ -639,11 +817,25 @@ struct SimTrade {
     char    why = '?';
 };
 
+// How the simulated broker misbehaves, for the exit tests. Default: never.
+struct SimOpts {
+    int  fail_closes = 0;      // the first N closes are rejected; the position stays
+    int  ignore_closes = 0;    // the first N are reported done, yet the position stays
+    bool timer = false;        // also run the 1 s timer between quotes, as the EA does
+};
+
+struct SimStats {
+    int halts = 0;             // FLATTEN_AND_HALT decisions seen
+    int last_halt_reason = 0;
+    int close_sends = 0;       // CLOSE decisions seen
+};
+
 // A broker that fills the way the engine does with costs at zero: market
 // orders at the touch, stops through gaps at the market, targets at their
 // price. If the bridge and the engine disagree, this is where it shows.
 std::vector<SimTrade> run_through_bridge(const std::vector<xau::Tick>& ticks, const char* strategy,
-                                         int32_t tf, double lots, int& halts) {
+                                         int32_t tf, double lots, SimStats& st,
+                                         const SimOpts& o = {}) {
     xau_limits l = default_limits();
     l.max_daily_loss_frac = 0.99;
     l.max_drawdown_frac = 0.99;
@@ -660,12 +852,28 @@ std::vector<SimTrade> run_through_bridge(const std::vector<xau::Tick>& ticks, co
 
     SimTrade              open{};
     double                sl = 0.0, tp = 0.0;
+    int                   fail_left = o.fail_closes, ignore_left = o.ignore_closes;
+    int64_t               last_ms = 0;
     const auto            px = [](xau::Points p) { return static_cast<double>(p) / 1000.0; };
     const auto            pts = [](double v) { return static_cast<int64_t>(std::llround(v * 1000.0)); };
+    const auto            norm = [](double v) { return std::round(v * 1000.0) / 1000.0; };   // NormalizeDouble
 
     for (const xau::Tick& t : ticks) {
         const int64_t ms = t.ts_us / 1000;
         const double  bid = px(t.bid_pts), ask = px(t.ask_pts());
+
+        // 0) the timer fires each second between quotes (a few, over a gap)
+        if (o.timer && last_ms != 0) {
+            for (int64_t tm = last_ms + 1000; tm < ms && tm <= last_ms + 5000; tm += 1000) {
+                xau_decision td{};
+                xau_on_timer(ctx, tm, &td);
+                if (td.action == XAU_ACTION_FLATTEN_AND_HALT) {
+                    ++st.halts;
+                    st.last_halt_reason = td.halt_reason;
+                }
+            }
+        }
+        last_ms = ms;
 
         // 1) the broker's resting stop and target
         if (open.side != 0) {
@@ -693,6 +901,7 @@ std::vector<SimTrade> run_through_bridge(const std::vector<xau::Tick>& ticks, co
         m.bid = bid;
         m.ask = ask;
         m.equity = m.balance = 10'000.0;
+        m.value_per_price_lot = 100.0;
         m.server_day = 0;                 // falls back to the UTC date
         if (open.side != 0) {
             m.own_positions = 1;
@@ -712,19 +921,35 @@ std::vector<SimTrade> run_through_bridge(const std::vector<xau::Tick>& ticks, co
             open = SimTrade{};
             open.side = d.action == XAU_ACTION_BUY ? 1 : -1;
             open.entry_ms = ms;
-            open.entry_pts = pts(open.side > 0 ? ask : bid);
-            sl = d.sl_price;
-            tp = d.tp_price;
-            xau_order_result(ctx, 1, 10009, open.side > 0 ? ask : bid, d.lots);
+            const double fill = open.side > 0 ? ask : bid;
+            open.entry_pts = pts(fill);
+            // As the EA does: stop and target re-anchored on the fill by
+            // their distances. With no slippage that is the quoted price
+            // exactly, and must be -- a hair off and a touch stops nothing.
+            sl = d.sl_dist > 0.0 ? norm(fill - open.side * d.sl_dist) : 0.0;
+            tp = d.tp_dist > 0.0 ? norm(fill + open.side * d.tp_dist) : 0.0;
+            CHECK(sl == d.sl_price);
+            CHECK(tp == d.tp_price);
+            xau_order_result(ctx, 1, 10009, fill, d.lots);
         } else if (d.action == XAU_ACTION_CLOSE && open.side != 0) {
-            open.exit_ms = ms;
-            open.exit_pts = pts(open.side > 0 ? bid : ask);
-            open.why = 'c';
-            out.push_back(open);
-            open = SimTrade{};
-            xau_order_result(ctx, 1, 10009, 0.0, lots);
+            ++st.close_sends;
+            if (fail_left > 0) {
+                --fail_left;
+                xau_order_result(ctx, 0, 10006, 0.0, 0.0);   // rejected
+            } else if (ignore_left > 0) {
+                --ignore_left;
+                xau_order_result(ctx, 1, 10009, 0.0, lots);  // "done", and still open
+            } else {
+                open.exit_ms = ms;
+                open.exit_pts = pts(open.side > 0 ? bid : ask);
+                open.why = 'c';
+                out.push_back(open);
+                open = SimTrade{};
+                xau_order_result(ctx, 1, 10009, 0.0, lots);
+            }
         } else if (d.action == XAU_ACTION_FLATTEN_AND_HALT) {
-            ++halts;
+            ++st.halts;
+            st.last_halt_reason = d.halt_reason;
         }
     }
     xau_destroy(ctx);
@@ -779,9 +1004,9 @@ XAU_TEST(bridge_trades_exactly_what_the_backtest_engine_trades) {
         auto        strat = e->make(0.10);
         const auto  bt = xau::BacktestEngine(store, cfg).run(*strat);
 
-        int        halts = 0;
-        const auto live = run_through_bridge(ticks, cs.name, static_cast<int32_t>(cs.tf), 0.10, halts);
-        CHECK_EQ(halts, 0);
+        SimStats   st;
+        const auto live = run_through_bridge(ticks, cs.name, static_cast<int32_t>(cs.tf), 0.10, st);
+        CHECK_EQ(st.halts, 0);
 
         std::vector<const xau::Trade*> want;
         for (const xau::Trade& t : bt.trades)
@@ -819,4 +1044,196 @@ XAU_TEST(bridge_trades_exactly_what_the_backtest_engine_trades) {
     }
     // A parity test that compares two empty lists proves nothing.
     CHECK(total_trades > 50);
+}
+
+// ---------------------------------------------------------------------------
+// exits the broker does not carry out
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The first parity strategy with an exit of the strategy's own (not a stop or
+// target): the only kind that sends CLOSE.
+struct CloseCase {
+    const char*           name = nullptr;
+    int32_t               tf = 0;
+    std::vector<SimTrade> base;
+    std::size_t           first_c = 0;
+};
+
+CloseCase find_close_case(const std::vector<xau::Tick>& ticks) {
+    for (const auto& [name, tf] : {std::pair{"MomentumContinuation", XAU_TF_M15},
+                                   std::pair{"LondonOpeningRange", XAU_TF_M15},
+                                   std::pair{"InsideBarBreak", XAU_TF_H1}}) {
+        SimStats   st;
+        CloseCase  cc;
+        cc.name = name;
+        cc.tf = tf;
+        cc.base = run_through_bridge(ticks, name, tf, 0.10, st);
+        for (std::size_t i = 0; i < cc.base.size(); ++i) {
+            if (cc.base[i].why == 'c') {
+                cc.first_c = i;
+                return cc;
+            }
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+XAU_TEST(a_rejected_close_is_retried_not_dropped) {
+    const auto ticks = parity_ticks(40, 7);
+    const auto cc = find_close_case(ticks);
+    REQUIRE(cc.name != nullptr);
+    const SimTrade& want = cc.base[cc.first_c];
+
+    // v2 dropped it: the strategy's exit was gone and the position sat
+    // unmanaged until its stop.
+    SimOpts o;
+    o.fail_closes = 2;
+    SimStats   st;
+    const auto live = run_through_bridge(ticks, cc.name, cc.tf, 0.10, st, o);
+    CHECK_EQ(st.halts, 0);
+    REQUIRE(live.size() > cc.first_c);
+    const SimTrade& got = live[cc.first_c];
+    CHECK_EQ(got.entry_ms, want.entry_ms);
+    CHECK_EQ(got.why, 'c');
+    // Two rejections, retried a second apart: out on the second quote after
+    // the strategy's own exit (quotes are 3 s apart).
+    CHECK_EQ(got.exit_ms, want.exit_ms + 6'000);
+}
+
+XAU_TEST(a_close_that_never_gets_through_halts_after_five_attempts) {
+    const auto ticks = parity_ticks(40, 7);
+    const auto cc = find_close_case(ticks);
+    REQUIRE(cc.name != nullptr);
+    SimOpts o;
+    o.fail_closes = 1'000'000;
+    SimStats st;
+    run_through_bridge(ticks, cc.name, cc.tf, 0.10, st, o);
+    CHECK_EQ(st.close_sends, 5);
+    CHECK(st.halts > 0);
+    CHECK_EQ(st.last_halt_reason, static_cast<int32_t>(XAU_HALT_RECONCILE_DRIFT));
+}
+
+XAU_TEST(a_close_reported_done_but_still_open_is_retried_and_the_timer_waits) {
+    const auto ticks = parity_ticks(40, 7);
+    const auto cc = find_close_case(ticks);
+    REQUIRE(cc.name != nullptr);
+    const SimTrade& want = cc.base[cc.first_c];
+
+    // v2's timer halted on this at 30 s: an accepted close not yet reflected
+    // in the book. Now the tick sees the position still open and re-sends.
+    SimOpts o;
+    o.ignore_closes = 1;
+    o.timer = true;
+    SimStats   st;
+    const auto live = run_through_bridge(ticks, cc.name, cc.tf, 0.10, st, o);
+    CHECK_EQ(st.halts, 0);
+    REQUIRE(live.size() > cc.first_c);
+    const SimTrade& got = live[cc.first_c];
+    CHECK_EQ(got.why, 'c');
+    CHECK(got.exit_ms > want.exit_ms + 30'000);   // the 30 s wait, then the retry
+    CHECK(got.exit_ms <= want.exit_ms + 36'000);
+}
+
+// ---------------------------------------------------------------------------
+// sizing in the account currency, and the broker's stop level
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct Entry {
+    xau_decision             d{};
+    int64_t                  ms = 0;
+    double                   bid = 0.0, ask = 0.0;
+    std::vector<std::string> refusals;   // "ms message", every refused entry
+};
+
+// The first entry LondonOpeningRange makes on the parity ticks, risk-sized.
+Entry first_entry(double value_per_price_lot, int32_t stops_level_pts) {
+    const auto ticks = parity_ticks(40, 7);
+    xau_limits l = default_limits();
+    l.max_spread = 1e9;
+    l.max_lots = 50.0;                    // out of the way: sizing is what is tested
+    Ctx                 c(l);
+    xau_strategy_config k = gold_config("LondonOpeningRange", XAU_TF_M15, 0.0);
+    k.risk_per_trade = 0.01;
+    k.stops_level_pts = stops_level_pts;
+    Entry e;
+    if (xau_arm(c.p, &k) != XAU_OK) {
+        CHECK(false);
+        return e;
+    }
+    for (const xau::Tick& t : ticks) {
+        xau_market m{};
+        m.tick_time_ms = m.now_ms = t.ts_us / 1000;
+        m.bid = static_cast<double>(t.bid_pts) / 1000.0;
+        m.ask = static_cast<double>(t.ask_pts()) / 1000.0;
+        m.equity = m.balance = 10'000.0;
+        m.value_per_price_lot = value_per_price_lot;
+        xau_decision d{};
+        xau_on_tick(c.p, &m, &d);
+        if (d.action == XAU_ACTION_BUY || d.action == XAU_ACTION_SELL) {
+            e.d = d;
+            e.ms = m.now_ms;
+            e.bid = m.bid;
+            e.ask = m.ask;
+            return e;
+        }
+        const std::string msg = message(c.p);
+        if (msg.rfind("entry refused", 0) == 0 &&
+            (e.refusals.empty() || e.refusals.back() != std::to_string(m.now_ms) + " " + msg))
+            e.refusals.push_back(std::to_string(m.now_ms) + " " + msg);
+    }
+    return e;
+}
+
+}  // namespace
+
+XAU_TEST(risk_sizing_uses_the_brokers_value_in_the_account_currency) {
+    const Entry usd = first_entry(100.0, 0);    // USD account: 100 per 1.00 per lot
+    REQUIRE(usd.d.action == XAU_ACTION_BUY || usd.d.action == XAU_ACTION_SELL);
+    REQUIRE(usd.d.sl_dist > 0.0);
+    // 1% of 10,000 lost at the stop.
+    const double want = std::floor(100.0 / (usd.d.sl_dist * 100.0) * 100.0 + 1e-9) / 100.0;
+    CHECK_NEAR(usd.d.lots, want, 1e-9);
+    const double ref = usd.d.action == XAU_ACTION_BUY ? usd.ask : usd.bid;
+    CHECK_NEAR(std::fabs(ref - usd.d.sl_price), usd.d.sl_dist, 1e-9);
+
+    // An account where the same move is worth half as much (v2 sized every
+    // non-USD account as if it were USD).
+    const Entry half = first_entry(50.0, 0);
+    REQUIRE(half.ms == usd.ms);
+    const double want_half = std::floor(100.0 / (usd.d.sl_dist * 50.0) * 100.0 + 1e-9) / 100.0;
+    CHECK_NEAR(half.d.lots, want_half, 1e-9);
+
+    // No value from the broker: refused, never guessed.
+    const Entry none = first_entry(0.0, 0);
+    CHECK_EQ(none.d.action, static_cast<int32_t>(XAU_ACTION_NONE));
+    REQUIRE(!none.refusals.empty());
+    CHECK(none.refusals.front().find("tick value") != std::string::npos);
+}
+
+XAU_TEST(the_stop_level_is_measured_from_bid_and_ask_as_the_broker_does) {
+    const Entry base = first_entry(100.0, 0);
+    REQUIRE(base.d.sl_dist > 0.0);
+    const auto dist = static_cast<int32_t>(std::llround(base.d.sl_dist * 1000.0));
+    const auto spread = static_cast<int32_t>(std::llround((base.ask - base.bid) * 1000.0));
+    REQUIRE(dist > spread + 1);
+
+    // dist >= level: the engine's rule passes. dist < level + spread: the
+    // broker would reject it (v2 sent it).
+    const Entry tight = first_entry(100.0, dist - spread / 2);
+    const std::string at = std::to_string(base.ms) + " ";
+    bool refused_there = false;
+    for (const auto& r : tight.refusals)
+        refused_there = refused_there || (r.rfind(at, 0) == 0 && r.find("bid/ask") != std::string::npos);
+    CHECK(refused_there);
+    CHECK(tight.ms != base.ms);
+
+    // dist == level + spread: allowed, at the same moment.
+    const Entry ok = first_entry(100.0, dist - spread);
+    CHECK_EQ(ok.ms, base.ms);
 }

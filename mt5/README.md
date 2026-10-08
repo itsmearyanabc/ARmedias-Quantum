@@ -21,7 +21,9 @@ five strategies.
 
 1. Build the DLL on Windows (MSVC, x64):
    `cmake --preset msvc-release && cmake --build --preset msvc-release --target xaumt5dll`
-2. Copy `build/msvc-release/bin/xaubridge.dll` to `<data folder>\MQL5\Libraries\`
+   — or download the `mt5-bridge` artifact from a green CI run. The DLL carries
+   its own C runtime: no Visual C++ redistributable is needed.
+2. Copy `xaubridge.dll` to `<data folder>\MQL5\Libraries\`
    (File → Open Data Folder in MetaTrader).
 3. Copy `mt5/XauBridgeEA.mq5` to `<data folder>\MQL5\Experts\` and compile it in
    MetaEditor (F7). It must compile with **0 errors**.
@@ -49,7 +51,7 @@ struct against its own, and refuses to run on any mismatch.
 | `InpMaxLots` | 0.10 | Hard ceiling on gross open lots on the symbol; above it the bridge halts. |
 | `InpMaxQuoteAgeSec` | 10 | No new entry on a quote older than this while the session is open. |
 | `InpKillFile` | `XAU_STOP.txt` | Create this file (in `MQL5\Files`) to halt everything. |
-| `InpMagic` | 990101 | Identifies this EA's positions. |
+| `InpMagic` | 990101 | Identifies this EA's positions and orders. Each chart needs its own: a second chart with the same symbol and magic is refused at start. |
 | `InpDeviationPts` | 30 | Largest slippage accepted on a market order, in broker points. |
 | `InpDryRun` | false | Log orders instead of sending them. |
 | `InpAllowRealAccount` | false | The EA refuses a non-demo account unless this is set. |
@@ -62,12 +64,17 @@ struct against its own, and refuses to run on any mismatch.
 2. The DLL runs its guards, then the strategy on the closed bar, and returns
    one of: nothing, BUY/SELL (size, stop, target), CLOSE, or FLATTEN_AND_HALT.
 3. The EA executes it. **Stops and targets ride on the order**, so the broker
-   holds the protection even if MetaTrader, the EA or the DLL goes away.
+   holds the protection even if MetaTrader, the EA or the DLL goes away. After
+   a fill with slippage they are moved onto the fill price, as the backtest
+   measures them; if the broker refuses the move, the ones sent with the order
+   stand.
 4. The EA reports the result. Until it does, the DLL sends nothing new: one
-   decision can never become two orders. A failed order is not retried.
+   decision can never become two orders. A failed **entry** is not retried —
+   its bar has passed. A failed **close** is retried each second, five attempts
+   in all, then the bridge halts and flattens: an exit is never dropped.
 
-A one-second timer re-checks the kill file and any order that never
-confirmed, so both work with the market closed. The chart shows a status panel
+A one-second timer re-checks the kill file and any order whose result never
+came back, so both work with the market closed. The chart shows a status panel
 and **HALT** / **RESUME** buttons.
 
 ## Safety controls
@@ -81,29 +88,47 @@ and **HALT** / **RESUME** buttons.
 | zero or inverted quote | **halt + flatten** |
 | a position on the symbol that is not this EA's | **halt + flatten** |
 | more of our positions than allowed, or gross lots over the ceiling | **halt + flatten** |
-| order result never reported, or a close never happens (30 s) | **halt + flatten** |
+| order result never reported (30 s) | **halt + flatten** |
+| a placed order of ours still working after 30 s | **halt + flatten** |
+| a close that does not get through in 5 attempts | **halt + flatten** |
 | internal error in the DLL | **halt + flatten** (fails closed) |
 | spread wider than the limit | no new entry; closing still allowed |
 | quote older than the limit while the session is open | no new entry |
-| a stop inside the spread / closer than the broker allows | that entry refused |
+| an order of ours still working | no new entry |
+| a stop inside the spread, or closer to bid/ask than the broker's stops level | that entry refused |
+| risk sizing with no tick value from the broker | that entry refused |
 
-A halt **persists**: it is written to `MQL5\Files\xau_state_<symbol>_<magic>.txt`
-together with the day's starting equity and the equity peak, so restarting
-MetaTrader or re-attaching the EA neither clears a halt nor hands back a fresh
-daily allowance. An unreadable state file starts the EA halted.
+A halt **persists**: it is written to
+`MQL5\Files\xau_state_<symbol>_<login>_<magic>.txt` together with the day's
+starting equity and the equity peak, so restarting MetaTrader or re-attaching
+the EA neither clears a halt nor hands back a fresh daily allowance. A write
+that fails (disk full, file locked) is retried every second, and the status
+panel says `WARNING state NOT persisted` until it lands.
+
+An unreadable state file starts the EA halted and is left untouched. RESUME
+reads it again: refused while it is still unreadable; repaired, its anchors are
+used; deleted, the EA starts with fresh anchors — deleting it is the operator's
+decision to start the day's allowance over.
 
 Only a person resumes: the **RESUME** button asks for confirmation, and is
 refused while the kill file exists. Deleting the kill file alone does not
 resume.
 
-FLATTEN closes **every** position on the symbol, not only this EA's. Do not
-trade the same symbol by hand on the account the EA runs on.
+FLATTEN closes **every** position on the symbol, not only this EA's, and
+deletes this EA's working orders. Do not trade the same symbol by hand on the
+account the EA runs on.
+
+Risk sizing (`InpFixedLots = 0`) uses the broker's tick value, which is in the
+account's currency, so a EUR or GBP account risks the percentage it was told.
 
 ## What is verified, and what is not
 
 - **Verified** (in CI, on Windows and Linux): the DLL's guards, persistence,
-  order lifecycle, warm-up, and trade-for-trade parity with the backtest
-  engine — `cpp/tests/test_bridge.cpp`.
+  order lifecycle (rejected, placed and stuck orders, retried closes), warm-up,
+  and trade-for-trade parity with the backtest engine, with stops re-anchored
+  on the fill — `cpp/tests/test_bridge.cpp`. On Windows CI also loads the
+  shipped `xaubridge.dll`, checks its ABI and struct sizes, and fails if it
+  depends on the Visual C++ runtime.
 - **Not verified here:** `XauBridgeEA.mq5` itself. MetaEditor runs only on
   Windows and is not part of CI, so the EA has not been compiled or run by the
   automated checks. Compile it, then run it on a demo account with
