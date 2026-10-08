@@ -45,7 +45,8 @@ XAU_CUSTOM_STRATEGY(MyBreakout, H1, "One line: what it trades and why.")
 
 **No C++ compiler on your PC?** Commit the file to the repository and push. CI
 builds it, runs the conformance tests on it, and publishes `xaubridge.dll` and
-`lab.exe` with your strategy inside as the `mt5-bridge` download of that run.
+`lab.exe` with your strategy inside, in the `ARmedias-Quantum` download of
+that run (the desktop folder; see `desktop/START-HERE.txt`).
 
 ### The rules a strategy must follow
 
@@ -63,7 +64,7 @@ The conformance test (`cpp/tests/test_strategies.cpp`) runs **every**
 registered strategy and fails if one is not deterministic, not causal (its
 early trades change when later data is added), throws, or has a name that
 does not match its file. CI publishes the DLL only after the tests pass, so a
-strategy that fails it never reaches the `mt5-bridge` download. Building
+strategy that fails it never reaches the `ARmedias-Quantum` download. Building
 locally, run `ctest` before copying the DLL.
 
 ### A prompt for Claude or Codex

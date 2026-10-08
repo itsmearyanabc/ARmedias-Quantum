@@ -21,8 +21,10 @@ five strategies.
 
 1. Build the DLL on Windows (MSVC, x64):
    `cmake --preset msvc-release && cmake --build --preset msvc-release --target xaumt5dll`
-   — or download the `mt5-bridge` artifact from a green CI run. The DLL carries
-   its own C runtime: no Visual C++ redistributable is needed.
+   — or download the `ARmedias-Quantum` artifact from a green CI run: a folder
+   for the desktop whose `1-INSTALL-INTO-MT5.bat` does steps 2 and 3 for every
+   MetaTrader 5 on the PC, compiling the EA too. The DLL carries its own C
+   runtime: no Visual C++ redistributable is needed.
 2. Copy `xaubridge.dll` to `<data folder>\MQL5\Libraries\`
    (File → Open Data Folder in MetaTrader).
 3. Copy `mt5/XauBridgeEA.mq5` to `<data folder>\MQL5\Experts\` and compile it in
