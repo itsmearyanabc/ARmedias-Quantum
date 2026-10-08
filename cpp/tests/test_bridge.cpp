@@ -548,6 +548,22 @@ XAU_TEST(a_kill_file_present_at_start_up_starts_halted) {
     CHECK_EQ(xau_is_halted(c.p), 1);
 }
 
+XAU_TEST(a_kill_file_in_a_missing_folder_starts_halted_and_blocks_resume) {
+    // A typo in the folder, or a path the DLL decodes differently from the
+    // EA: the operator's stop would never be seen. Not a reason to trade.
+    fixture::TempDir dir;
+    const auto       folder = dir.path() / "nope";
+    xau_limits       l = default_limits();
+    set_path(l.kill_file, (folder / "STOP").string());
+    Ctx c(l);
+    REQUIRE(c.p != nullptr);
+    CHECK_EQ(xau_is_halted(c.p), 1);
+    CHECK_EQ(tick(c.p, healthy_market()).halt_reason, static_cast<int32_t>(XAU_HALT_KILL_FILE));
+    CHECK_EQ(xau_resume(c.p), XAU_ERR_REFUSED);
+    std::filesystem::create_directories(folder);
+    CHECK_EQ(xau_resume(c.p), XAU_OK);
+}
+
 // ---------------------------------------------------------------------------
 // entries, and what refuses them
 // ---------------------------------------------------------------------------

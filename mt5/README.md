@@ -55,12 +55,17 @@ struct against its own, and refuses to run on any mismatch.
 | `InpDeviationPts` | 30 | Largest slippage accepted on a market order, in broker points. |
 | `InpDryRun` | false | Log orders instead of sending them. |
 | `InpAllowRealAccount` | false | The EA refuses a non-demo account unless this is set. |
+| `InpServerDst` | US | The broker server's daylight-saving rule: US (most GMT+2/+3 brokers), EU, or none. Used to convert warm-up history to UTC with the offset in force at each bar, not today's. |
+| `InpTesterGmtOffset` | 2 | Strategy Tester only: the server's winter UTC offset in hours (the tester has no UTC clock). |
 
 ## What it does, tick by tick
 
 1. Reports the quote, account equity, this EA's position and every other
    position on the symbol (*foreign*), the broker trading day and whether the
-   session is open. Times are converted to UTC once, here.
+   session is open. Times are converted to UTC once, here. "Now" is the
+   broker's clock — its latest quote time carried forward by the PC's
+   monotonic counter — so a PC clock that is off does not make every quote
+   look stale.
 2. The DLL runs its guards, then the strategy on the closed bar, and returns
    one of: nothing, BUY/SELL (size, stop, target), CLOSE, or FLATTEN_AND_HALT.
 3. The EA executes it. **Stops and targets ride on the order**, so the broker
@@ -84,6 +89,7 @@ and **HALT** / **RESUME** buttons.
 | daily loss limit reached | **halt + flatten** |
 | drawdown limit reached (peak, or initial balance) | **halt + flatten** |
 | kill file present (checked every second) | **halt + flatten** |
+| kill file's folder does not exist (the switch could never fire) | **starts halted**; resume refused until it exists |
 | HALT button | **halt + flatten** |
 | zero or inverted quote | **halt + flatten** |
 | a position on the symbol that is not this EA's | **halt + flatten** |
@@ -120,6 +126,9 @@ account the EA runs on.
 
 Risk sizing (`InpFixedLots = 0`) uses the broker's tick value, which is in the
 account's currency, so a EUR or GBP account risks the percentage it was told.
+
+In the Strategy Tester nothing persists: each pass starts with no state file,
+so one pass's halt or equity peak cannot decide the next.
 
 ## What is verified, and what is not
 

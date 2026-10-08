@@ -145,6 +145,14 @@ enum XauTimeframe
    XAU_D1  = 6    // D1
   };
 
+//--- the broker server's daylight-saving rule, for converting HISTORY to UTC
+enum XauServerDst
+  {
+   XAU_DST_US   = 0,   // US rules (most GMT+2/+3 New-York-close brokers)
+   XAU_DST_EU   = 1,   // EU rules
+   XAU_DST_NONE = 2    // fixed offset all year
+  };
+
 //--- inputs: what to trade
 input string       InpStrategy         = "";       // Strategy (registry name; empty = guards only)
 input XauTimeframe InpTimeframe        = XAU_D1;   // Bar length the strategy was tested on
@@ -164,10 +172,16 @@ input int          InpMagic            = 990101;
 input int          InpDeviationPts     = 30;       // Max slippage accepted (broker points)
 input bool         InpDryRun           = false;    // Log orders instead of sending them
 input bool         InpAllowRealAccount = false;    // Allow a REAL account (default: demo only)
+//--- inputs: time
+input XauServerDst InpServerDst        = XAU_DST_US; // Broker server's daylight-saving rule
+input int          InpTesterGmtOffset  = 2;        // Strategy Tester only: server's winter UTC offset (h)
 
 //--- state
 long    g_ctx        = 0;
-long    g_offset_ms  = 0;      // broker server time minus UTC
+long    g_offset_ms  = 0;      // broker server time minus UTC, now
+long    g_std_offset_ms = 0;   // the same outside daylight saving
+long    g_srv_ms     = 0;      // the broker's clock (server ms) ...
+ulong   g_srv_at     = 0;      // ... as of this GetTickCount64()
 int     g_point_den  = 1000;
 int     g_last_halt  = -1;
 string  g_last_msg   = "";
@@ -205,24 +219,115 @@ string FilesPath(const string name)
    return TerminalInfoString(TERMINAL_DATA_PATH) + "\\MQL5\\Files\\" + name;
   }
 //+------------------------------------------------------------------+
+//| The n-th Sunday (1..4) of a month, or the last (n = -1), 00:00.    |
+//| "Last" is only asked of March and October, both 31 days long.      |
+//+------------------------------------------------------------------+
+datetime SundayOf(const int year, const int mon, const int n)
+  {
+   MqlDateTime t;
+   ZeroMemory(t);
+   t.year = year;
+   t.mon  = mon;
+   t.day  = 1;
+   datetime first = StructToTime(t);
+   MqlDateTime f;
+   TimeToStruct(first, f);
+   int day = 1 + (7 - f.day_of_week) % 7;   // the first Sunday
+   if(n > 0)
+      day += 7 * (n - 1);
+   else
+      while(day + 7 <= 31)
+         day += 7;
+   return(first + (datetime)((day - 1) * 86400));
+  }
+//+------------------------------------------------------------------+
+//| Whether the server was on daylight saving at a UTC instant.        |
+//+------------------------------------------------------------------+
+bool DstAt(const datetime utc)
+  {
+   if(InpServerDst == XAU_DST_NONE)
+      return(false);
+   MqlDateTime t;
+   TimeToStruct(utc, t);
+   datetime from, to;
+   if(InpServerDst == XAU_DST_US)
+     {
+      from = SundayOf(t.year, 3, 2) + 7 * 3600;    // 02:00 New York, standard time
+      to   = SundayOf(t.year, 11, 1) + 6 * 3600;   // 02:00 New York, daylight time
+     }
+   else
+     {
+      from = SundayOf(t.year, 3, -1) + 3600;       // 01:00 UTC
+      to   = SundayOf(t.year, 10, -1) + 3600;
+     }
+   return(utc >= from && utc < to);
+  }
+//+------------------------------------------------------------------+
 //| Server time minus UTC, rounded to the half hour. Brokers run on    |
 //| GMT+2/+3 and shift with DST, so this is re-measured every minute.  |
+//| The Strategy Tester's clock has no UTC (TimeGMT() is server time), |
+//| so there the winter offset comes from InpTesterGmtOffset.          |
 //+------------------------------------------------------------------+
 void RefreshOffset()
   {
+   if(MQLInfoInteger(MQL_TESTER))
+     {
+      g_std_offset_ms = (long)InpTesterGmtOffset * 3600 * 1000;
+      datetime utc = (datetime)((long)TimeCurrent() - g_std_offset_ms / 1000);
+      g_offset_ms = g_std_offset_ms + (DstAt(utc) ? 3600 * 1000 : 0);
+      return;
+     }
    long secs = (long)(TimeTradeServer() - TimeGMT());
    g_offset_ms = (long)MathRound(secs / 1800.0) * 1800 * 1000;
+   g_std_offset_ms = g_offset_ms - (DstAt(TimeGMT()) ? 3600 * 1000 : 0);
+  }
+//+------------------------------------------------------------------+
+//| The offset in force at a past server time. History spans both      |
+//| halves of the year; converting it all with today's offset puts     |
+//| half of it an hour off, and moves an hour between daily bars.      |
+//+------------------------------------------------------------------+
+long OffsetAt(const datetime server_t)
+  {
+   datetime utc = (datetime)((long)server_t - g_std_offset_ms / 1000);   // offsets can be negative
+   return(g_std_offset_ms + (DstAt(utc) ? 3600 * 1000 : 0));
+  }
+//+------------------------------------------------------------------+
+//| The broker's clock: its own latest quote time, carried forward by  |
+//| the PC's monotonic counter. TimeTradeServer() is the PC clock      |
+//| shifted by the server's zone, so a PC 12 s fast made every quote   |
+//| look 12 s old and refused every entry. Before the first quote the  |
+//| PC's estimate is all there is.                                     |
+//+------------------------------------------------------------------+
+long ServerNowMs()
+  {
+   if(g_srv_at == 0)
+      return((long)TimeTradeServer() * 1000);
+   return(g_srv_ms + (long)(GetTickCount64() - g_srv_at));
+  }
+//+------------------------------------------------------------------+
+//| Moved only forward by a quote: one older than the running clock is |
+//| exactly what the staleness check is for. A quote five minutes      |
+//| behind is not a late quote but a clock that jumped: re-anchor.     |
+//+------------------------------------------------------------------+
+void AnchorClock(const long quote_server_ms)
+  {
+   long est = ServerNowMs();
+   if(g_srv_at == 0 || quote_server_ms > est || est - quote_server_ms > 300000)
+     {
+      g_srv_ms = quote_server_ms;
+      g_srv_at = GetTickCount64();
+     }
   }
 //+------------------------------------------------------------------+
 long NowUtcMs()
   {
-   return (long)TimeTradeServer() * 1000 - g_offset_ms;
+   return(ServerNowMs() - g_offset_ms);
   }
 //+------------------------------------------------------------------+
 int ServerDay()
   {
    MqlDateTime dt;
-   TimeToStruct(TimeTradeServer(), dt);
+   TimeToStruct((datetime)(ServerNowMs() / 1000), dt);
    return dt.year * 10000 + dt.mon * 100 + dt.day;
   }
 //+------------------------------------------------------------------+
@@ -231,7 +336,7 @@ int ServerDay()
 //+------------------------------------------------------------------+
 bool SessionOpen()
   {
-   datetime now = TimeTradeServer();
+   datetime now = (datetime)(ServerNowMs() / 1000);
    MqlDateTime dt;
    TimeToStruct(now, dt);
    long secs = dt.hour * 3600 + dt.min * 60 + dt.sec;
@@ -331,7 +436,8 @@ void FillPositions(XauMarket &m)
          m.pos_open_price   = PositionGetDouble(POSITION_PRICE_OPEN);
          m.pos_sl           = PositionGetDouble(POSITION_SL);
          m.pos_tp           = PositionGetDouble(POSITION_TP);
-         m.pos_open_time_ms = PositionGetInteger(POSITION_TIME_MSC) - g_offset_ms;
+         m.pos_open_time_ms = PositionGetInteger(POSITION_TIME_MSC) -
+                              OffsetAt((datetime)PositionGetInteger(POSITION_TIME));
         }
      }
   }
@@ -545,7 +651,7 @@ int FeedHistory(const ENUM_TIMEFRAMES tf, const datetime from, const datetime up
    ArrayResize(xr, n);
    for(int i = 0; i < n; i++)
      {
-      xr[i].time_ms     = ((long)r[i].time) * 1000 - g_offset_ms;
+      xr[i].time_ms     = ((long)r[i].time) * 1000 - OffsetAt(r[i].time);
       xr[i].open        = r[i].open;
       xr[i].high        = r[i].high;
       xr[i].low         = r[i].low;
@@ -575,10 +681,18 @@ void Warmup()
      }
    datetime now    = TimeTradeServer();
    datetime from   = now - (datetime)(MathMax(InpWarmupDays, 1) * 86400);
-   datetime coarse_open = iTime(_Symbol, coarse, 0);   // the forming bar
-   datetime minute_open = iTime(_Symbol, PERIOD_M1, 0);
-   int n1 = FeedHistory(coarse, from, coarse_open);
-   int n2 = (coarse != PERIOD_M1) ? FeedHistory(PERIOD_M1, coarse_open, minute_open) : 0;
+   //--- The last bar is usually still forming and is left to the live feed.
+   //--- Not when it has finished -- the market is closed, or the minute had
+   //--- no quotes -- which a minute's margin over the PC clock settles.
+   int      cs          = PeriodSeconds(coarse);
+   datetime coarse_end  = iTime(_Symbol, coarse, 0);
+   datetime minute_end  = iTime(_Symbol, PERIOD_M1, 0);
+   if(coarse_end + cs + 60 <= now)
+      coarse_end += cs;
+   if(minute_end + 120 <= now)
+      minute_end += 60;
+   int n1 = FeedHistory(coarse, from, coarse_end);
+   int n2 = (coarse != PERIOD_M1) ? FeedHistory(PERIOD_M1, coarse_end, minute_end) : 0;
    PrintFormat("warm-up: %d %s bars + %d M1 bars from %s", n1, EnumToString(coarse), n2,
                TimeToString(from));
    if(n1 <= 0)
@@ -637,10 +751,13 @@ int OnInit()
    lim.pending_timeout_ms  = 30000;
    CopyToFixed((InpKillFile == "") ? "" : FilesPath(InpKillFile), lim.kill_file, 260);
    //--- Keyed by account too: the same symbol and magic on a second login is a
-   //--- different account with its own day and peak.
-   CopyToFixed(FilesPath(StringFormat("xau_state_%s_%I64d_%d.txt", _Symbol,
-                                      AccountInfoInteger(ACCOUNT_LOGIN), InpMagic)),
-               lim.state_file, 260);
+   //--- different account with its own day and peak. None in the Strategy
+   //--- Tester: each pass is its own account, and a halt or peak carried over
+   //--- from the last pass would decide the next one.
+   if(!MQLInfoInteger(MQL_TESTER))
+      CopyToFixed(FilesPath(StringFormat("xau_state_%s_%I64d_%d.txt", _Symbol,
+                                         AccountInfoInteger(ACCOUNT_LOGIN), InpMagic)),
+                  lim.state_file, 260);
 
    uchar sym[];
    ArrayResize(sym, 64);
@@ -723,6 +840,7 @@ void OnTick()
    if(!SymbolInfoTick(_Symbol, tk))
       return;
 
+   AnchorClock(tk.time_msc);
    XauMarket m;
    ZeroMemory(m);
    m.tick_time_ms = tk.time_msc - g_offset_ms;

@@ -344,6 +344,17 @@ bool kill_file_exists(const Context& c) noexcept {
     return fs::exists(c.kill_path, ec) && !ec;
 }
 
+// A kill file in a folder that does not exist can never be created where the
+// bridge looks: a kill switch wired to nothing. Fails closed -- an error
+// reading the folder counts as missing.
+bool kill_folder_missing(const Context& c) noexcept {
+    if (c.kill_path.empty()) return false;
+    const fs::path dir = c.kill_path.parent_path();
+    if (dir.empty()) return false;   // a bare name: the working directory
+    std::error_code ec;
+    return !fs::is_directory(dir, ec);
+}
+
 // Checked at most once a second: MQL5 calls OnTick on every quote, and gold
 // can produce thousands per second. A stat() per tick would put the filesystem
 // on the hot path of a trading loop. Timed on the wall clock the EA passes,
@@ -814,6 +825,14 @@ void* XAU_CALL xau_create(const char* symbol, int32_t abi_version, const xau_lim
         }
 
         load_state(*c);
+        if (kill_folder_missing(*c) && !c->st.halted) {
+            c->st.halted = true;
+            c->st.halt_reason = XAU_HALT_KILL_FILE;
+            c->st.halt_message = "kill file folder not found: " +
+                                 display(c->kill_path.parent_path()) +
+                                 " -- the kill switch could not work";
+            save_state(*c);
+        }
         if (kill_file_exists(*c) && !c->st.halted) {
             c->st.halted = true;
             c->st.halt_reason = XAU_HALT_KILL_FILE;
@@ -1079,6 +1098,11 @@ int32_t XAU_CALL xau_resume(void* ctx) {
     try {
         if (kill_file_exists(*c)) {
             c->last_message = "resume refused: the kill file still exists";
+            return XAU_ERR_REFUSED;
+        }
+        if (kill_folder_missing(*c)) {
+            c->last_message = "resume refused: the kill file's folder does not exist: " +
+                              display(c->kill_path.parent_path());
             return XAU_ERR_REFUSED;
         }
         if (c->st.halted && c->st.halt_reason == XAU_HALT_STATE_FILE) {

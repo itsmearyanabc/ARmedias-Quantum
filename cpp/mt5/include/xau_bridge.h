@@ -216,6 +216,7 @@ XAU_API int32_t XAU_CALL xau_struct_size(int32_t which);   /* 0 market, 1 decisi
 
 /* Create a trading context. Returns NULL on failure. symbol is copied.
  * Loads the state file: a persisted halt survives, an unreadable file halts.
+ * A kill file whose folder does not exist halts too: that switch cannot work.
  * NULL also when another live context already uses the same state file: two
  * EAs sharing one file would overwrite each other's halts. */
 XAU_API void* XAU_CALL xau_create(const char* symbol, int32_t abi_version,
