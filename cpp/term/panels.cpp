@@ -711,7 +711,9 @@ void start_backtest(AppState& app) {
     const BaselineEntry& entry = reg[static_cast<std::size_t>(app.strategy_index)];
 
     BacktestConfig cfg;
-    cfg.spec = SymbolSpec::xauusd_default();
+    // The store's own contract terms. Gold's on a silver store rescales every
+    // P&L figure: silver's lot is 5,000 oz to gold's 100.
+    cfg.spec = SymbolSpec::for_symbol(app.symbol);
     cfg.tf = app.tf;
     cfg.initial_balance = app.initial_balance;
     cfg.apply_swap = app.apply_swap;
@@ -1041,7 +1043,7 @@ void panel_blotter(AppState& app) {
     }
 
     const std::vector<Trade>& tr = app.bt->trades;
-    const SymbolSpec          spec = SymbolSpec::xauusd_default();
+    const SymbolSpec          spec = SymbolSpec::for_symbol(app.symbol);
 
     // Rejections are shown next to the trade count, never hidden: a strategy
     // that is mostly rejected looks profitable on the trades that survived.
@@ -1240,7 +1242,8 @@ void draw_ui(AppState& app) {
             ImGui::MenuItem("Risk gauges");
             ImGui::EndDisabled();
             ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
-            ImGui::TextUnformatted("  optimizer needs Phase 6, gauges Phase 7");
+            ImGui::TextUnformatted("  not built yet: run validate for the search,");
+            ImGui::TextUnformatted("  the MT5 EA shows live risk on its chart");
             ImGui::PopStyleColor();
             ImGui::EndMenu();
         }

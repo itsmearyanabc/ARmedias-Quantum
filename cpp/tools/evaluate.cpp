@@ -92,16 +92,8 @@ int main(int argc, char** argv) {
         } else if (a == "--swap-short" && i + 1 < argc) {
             fin.short_annual = std::atof(argv[++i]);
         } else if (a == "--tf" && i + 1 < argc) {
-            const std::string want = argv[++i];
-            bool              found = false;
-            for (int k = 0; k < static_cast<int>(Timeframe::COUNT); ++k) {
-                if (want == timeframe_name(static_cast<Timeframe>(k))) {
-                    tf = static_cast<Timeframe>(k);
-                    found = true;
-                }
-            }
-            if (!found) {
-                std::fprintf(stderr, "unknown timeframe: %s\n", want.c_str());
+            if (!parse_timeframe(argv[++i], tf)) {
+                std::fprintf(stderr, "unknown timeframe: %s\n", argv[i]);
                 return 2;
             }
         } else if ((a == "--from" || a == "--to" || a == "--trade-from") && i + 1 < argc) {

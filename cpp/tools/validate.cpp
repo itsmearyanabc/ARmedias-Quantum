@@ -66,10 +66,9 @@ int main(int argc, char** argv) {
         } else if (a == "--blocks" && i + 1 < argc) {
             blocks = static_cast<std::size_t>(std::atoi(argv[++i]));
         } else if (a == "--tf" && i + 1 < argc) {
-            const std::string want = argv[++i];
-            for (int k = 0; k < static_cast<int>(Timeframe::COUNT); ++k) {
-                const auto cand = static_cast<Timeframe>(k);
-                if (want == timeframe_name(cand)) tf = cand;
+            if (!parse_timeframe(argv[++i], tf)) {
+                std::fprintf(stderr, "unknown timeframe: %s\n", argv[i]);
+                return 2;
             }
         } else if (!a.empty() && a[0] != '-') {
             if (positional == 0) dir = a;
@@ -187,6 +186,12 @@ int main(int argc, char** argv) {
         std::printf("  skew %.2f  kurtosis %.2f  (normal is 0.00 / 3.00)\n", bm.skew,
                     bm.kurtosis);
         std::printf("  trials         %zu   SR spread across them %.4f\n", n_trials, sm.stdev);
+        if (trials_override == 0) {
+            std::printf("  WARNING        --trials not given: charged only for the %zu strategies\n"
+                        "                 in this run. Pass every configuration ever evaluated on\n"
+                        "                 this data (docs/RESEARCH-B.md: 73), or this DSR flatters.\n",
+                        n_trials);
+        }
         std::printf("  benchmark      %.4f  <- the Sharpe %zu zero-edge strategies would\n",
                     bench, n_trials);
         std::printf("                         produce by luck alone\n");

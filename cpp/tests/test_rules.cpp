@@ -100,6 +100,20 @@ XAU_TEST(utc_hour_and_weekday) {
     CHECK_EQ(utc_weekday(-kUsPerDay), 3);         // 1969-12-31 was a Wednesday
 }
 
+XAU_TEST(parse_timeframe_accepts_every_name_and_nothing_else) {
+    for (int k = 0; k < static_cast<int>(Timeframe::COUNT); ++k) {
+        const auto tf = static_cast<Timeframe>(k);
+        Timeframe  got = Timeframe::COUNT;
+        CHECK(parse_timeframe(timeframe_name(tf), got));
+        CHECK_EQ(static_cast<int>(got), k);
+    }
+    for (const char* bad : {"", "m15", "H2", "D", "M15 ", "?"}) {
+        Timeframe got = Timeframe::H4;
+        CHECK(!parse_timeframe(bad, got));
+        CHECK_EQ(static_cast<int>(got), static_cast<int>(Timeframe::H4));   // untouched
+    }
+}
+
 XAU_TEST(parse_utc_date_reads_midnight_and_rejects_junk) {
     TimeUs t = -1;
     REQUIRE(parse_utc_date("2020-01-01", t));

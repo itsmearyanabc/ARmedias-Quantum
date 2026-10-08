@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace xau {
@@ -45,6 +46,19 @@ constexpr const char* timeframe_name(Timeframe tf) noexcept {
         case Timeframe::D1:  return "D1";
         default:             return "?";
     }
+}
+
+// "M15" -> Timeframe::M15. False, with `out` untouched, on anything else: a
+// mistyped bar length must stop a tool, not silently run it on the default.
+constexpr bool parse_timeframe(std::string_view name, Timeframe& out) noexcept {
+    for (int k = 0; k < static_cast<int>(Timeframe::COUNT); ++k) {
+        const auto tf = static_cast<Timeframe>(k);
+        if (name == timeframe_name(tf)) {
+            out = tf;
+            return true;
+        }
+    }
+    return false;
 }
 
 // OHLC is quoted on the BID, matching MT5 chart convention. The ask side is

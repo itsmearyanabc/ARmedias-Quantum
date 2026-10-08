@@ -95,7 +95,10 @@ struct SizingConfig {
     // fixed lot size takes several times more real risk in a wild week than a
     // quiet one, which is how a strategy with a good average has a fatal month.
     bool   vol_target = true;
-    double target_atr_pts = 0.0;   // 0 = use the running mean as the target
+    // The ATR the sizing treats as normal. 0 = no volatility adjustment at
+    // all -- size_by_risk is a pure function and keeps no running mean, so a
+    // caller that wants targeting must supply the reference level.
+    double target_atr_pts = 0.0;
 
     double max_lots = 1.0;
     double min_lots = 0.01;

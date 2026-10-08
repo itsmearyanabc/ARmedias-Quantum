@@ -124,17 +124,8 @@ int main(int argc, char** argv) {
         } else if (a == "--lots" && i + 1 < argc) {
             lots = std::atof(argv[++i]);
         } else if (a == "--tf" && i + 1 < argc) {
-            const std::string want = argv[++i];
-            bool              found = false;
-            for (int k = 0; k < static_cast<int>(Timeframe::COUNT); ++k) {
-                const auto cand = static_cast<Timeframe>(k);
-                if (want == timeframe_name(cand)) {
-                    tf = cand;
-                    found = true;
-                }
-            }
-            if (!found) {
-                std::fprintf(stderr, "unknown timeframe: %s\n", want.c_str());
+            if (!parse_timeframe(argv[++i], tf)) {
+                std::fprintf(stderr, "unknown timeframe: %s\n", argv[i]);
                 return 2;
             }
         } else if (a == "--cost-mult" && i + 1 < argc) {
