@@ -86,6 +86,20 @@ jobs:
               done
           exit 1
 
+      # The MT5 bridge, packaged only after the unit tests -- the parity test
+      # among them -- have passed on this exact build. Download it from the
+      # run's Artifacts; see mt5/README.md for the install.
+      - name: Package MT5 bridge
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt5-bridge
+          if-no-files-found: error
+          path: |
+            build/msvc-release/bin/xaubridge.dll
+            mt5/XauBridgeEA.mq5
+            mt5/README.md
+
       - name: Generate synthetic ticks
         run: python -m xau_ingest.synth --months 3 --out ../data/ticks/XAUUSD
         working-directory: python
